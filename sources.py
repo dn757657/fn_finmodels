@@ -1,6 +1,7 @@
 import pandas_datareader as pdr
 import yfinance as yf
 import datetime
+import copy
 import numpy as np
 from forex_python.converter import CurrencyRates
 from dn_bpl import Txn, Category, Account, BplModel
@@ -8,32 +9,52 @@ from sqlalchemy.orm import Session
 import sqlalchemy as sa
 from utils import sqlalch_2_df
 import pandas as pd
+import logging
+from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype
 
 #internal
 from df_utils import incluloc
 from df_utils import wrapped_date_range
 
 
-class FinSource:
+class FSource:
     """ all sources inherit FSource """
 
-    def __init__(self, name):
+    def __init__(self, name, forecast=None, **kwargs):
         """
         :args
         data                        dataframe containing source data
         ylbl                        y axis dataframe label - use if data is consistently accessed from a column
                                     always map ylbl to desired output within child objects
+        forecast                    forecast object
         """
 
         self.name = name
         self.data = None
         self.ylbl = None
 
+        self.forecast = forecast  # forecast object for predicting future source values
+
         # currency params
         self.ccy_out = None
         self.ccy_native = None
 
+        # optional params and source modifiers
+        self.cumulative = None
+        self.inverted = None
+
+        self.parse_opts(**kwargs)
+
         pass
+
+    def parse_opts(self, **kwargs):
+        if 'cumulative' in kwargs.keys():
+            self.cumulative = True
+
+        if 'inverted' in kwargs.keys():
+            self.inverted = True
+
+        return
 
     def sample(self, start, end):
         """ start/end as datetime -> dataframe sample
@@ -47,6 +68,19 @@ class FinSource:
         """
 
         self.data.sort_index(inplace=True)  # sort data
+
+        # apply sample options
+        if self.cumulative:
+            self.data = self._to_cumulative(self.data, self.ylbl)
+            # if cumulative need to normalize
+            self.data = self._normalize(self.data, self.ylbl, start, end)
+        if self.inverted:
+            self.data = self._invert(self.data, self.ylbl)
+
+        # forecast individual source using source forecast model and add to self.data
+        self.add_forecast(start=start, end=end, training_df=self.data[self.ylbl])
+
+        # self.data.sort_index(inplace=True)  # sort data
         self.data = incluloc(self.data, start, end)  # only return data within requested dates
 
         # check ccy
@@ -54,7 +88,51 @@ class FinSource:
             if self.ccy_out != self.ccy_native:
                 self.convert_ccy()
 
-        # sample = self.data
+        return
+
+    def add_forecast(self, start, end, training_df=pd.DataFrame()):
+        """ :return data frame with forecasted y within start -> end window as freq=D
+        (could resolve freq with code later)
+        df has x and y cols along with integer index
+
+        can be used to forecast all?
+
+        :arg
+            start           datetime object where forecast starts
+            end             datetime object where forecast ends
+            training_df     dataframe with datetime index and single column of training data
+        """
+        if training_df.empty:
+            if self.data.empty:
+                self.sample(start=start, end=end)
+
+            training_df = self.data
+
+        # get start and end bounds for forecasting
+        # get max date in available data
+        max_data_date = training_df.index.max()
+        # get max sample date, cannot assume sample_at is sorted
+        max_sample_date = end
+
+        # if sample is future than forecast
+        if self.forecast:
+            if max_sample_date > max_data_date:
+                self.forecast.get_forecast(start=max_data_date, end=max_sample_date, training_df=training_df)
+                forecast_df = self.forecast.forecast
+
+            else:
+                forecast_df = pd.DataFrame()
+        else:
+            forecast_df = pd.DataFrame
+
+        # add forecast to self.data if exists
+        if not forecast_df.empty:
+            self.data = pd.concat([forecast_df, self.data]).drop_duplicates(keep=False)
+        else:
+            logging.error("Cannot sample future without forecast")
+            return
+        # sort or indexing can get fucky
+        self.data.sort_index(inplace=True)
 
         return
 
@@ -69,16 +147,62 @@ class FinSource:
 
         return
 
+    # source options
+    # def _apply_sample_options(self, data):
+    #     # apply asset modifiers to source sample
+    #     if self.cumulative:
+    #         data = self._to_cumulative(data, self.ylbl)
+    #     if self.inverted:
+    #         data = self._invert(data, self.ylbl)
+    #     return data
 
-class Bpl_Txns(FinSource):
+    def _to_cumulative(self, data, col):
+        """ convert y to cumulative sum column """
+
+        if is_numeric_dtype(data[col]):
+            data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
+        else:
+            logging.error("cannot sum non-numeric dtype")
+
+        return data
+
+    def _invert(self, data, col):
+        data[col] = data[col] * -1
+
+        return data
+
+    def _normalize(self, data, col, start, end):
+        """ normalize cumulative data at the start date """
+
+        # get minimum date in inclusive requested dataset
+        inclu_sample = incluloc(data, start, end)
+        inclu_sample_min = inclu_sample.index.min()
+
+        # get integer indexes where minimum inclusive date is index
+        inclu_sample_min_int = np.where(data.index == inclu_sample_min)
+
+        # get the last value not included
+        offset_int = np.amin(inclu_sample_min_int) - 1
+        offset = data[col].iloc[offset_int]
+
+        # offset dataset by last value not included
+        data[col] = data[col] - offset
+
+        return data
+
+
+
+class Bpl_Txns(FSource):
     """ source data from bpl txns table sqlite db"""
 
     def __init__(self,
                  name,
                  ccy_native,
-                 category=None,
-                 acc=None,
-                 ccy_out=None):
+                 forecast=None,
+                 categories=None,
+                 accounts=None,
+                 ccy_out=None,
+                 **kwargs):
         """
         :param name:
         :param ccy_native:
@@ -86,16 +210,22 @@ class Bpl_Txns(FinSource):
         :param category:            must be str
         :param acc                  must be str
         """
-        super().__init__(name)
+        super().__init__(name, forecast=forecast, **kwargs)
         self.ccy_native = ccy_native
         self.ccy_out = ccy_out
         self.ylbl = 'txn_amount'
 
         # db params
-        self.category = category
-        self.acc = acc
+        if not isinstance(categories, list):
+            categories = [categories]
+        if not isinstance(accounts, list):
+            accounts = [accounts]
+
+        self.categories = categories
+        self.accounts = accounts
 
     def sample(self, start, end):
+        """ categories and accounts are always filtered as OR condition """
 
         db = BplModel()
         session = Session(db.engine)
@@ -103,19 +233,25 @@ class Bpl_Txns(FinSource):
         filters = list()
         ta_joins = list()
 
-        if self.category:
-            ta_joins.append(Category)
-            filters.append(sa.or_(Category.id == self.category, Category.cat_desc == self.category))
+        # if self.category:
+        #     ta_joins.append(Category)
+        #     filters.append(sa.or_(Category.id == self.category, Category.cat_desc == self.category))
 
-        if self.acc:
+        if self.categories:
+            ta_joins.append(Category)
+            for cat in self.categories:
+                filters.append(sa.or_(Category.id == cat, Category.cat_desc == cat))
+
+        if self.accounts:
             ta_joins.append(Account)
-            filters.append(sa.or_(Account.id == self.acc, Account.acc_num == self.acc, Account.acc_desc == self.acc))
+            for acc in self.accounts:
+                filters.append(sa.or_(Account.id == acc, Account.acc_num == acc, Account.acc_desc == acc))
 
         o_txns = (session.query(Txn))
 
         if ta_joins:
             o_txns = o_txns.join(*ta_joins)
-            o_txns = o_txns.filter(*filters)
+            o_txns = o_txns.filter(sa.or_(*filters))
 
         df_txns = sqlalch_2_df(o_txns)
 
@@ -127,11 +263,11 @@ class Bpl_Txns(FinSource):
 
 
 # ------------------------------------------GENERATED SOURCES------------------------------------------------
-class Periodic(FinSource):
+class Periodic(FSource):
     """ generate/model periodic source data """
 
-    def __init__(self, name, amount, period_unit, period_size, transition_pairs=None):
-        super().__init__(name=name)
+    def __init__(self, name, amount, period_unit, period_size, transition_pairs=None, **kwargs):
+        super().__init__(name=name, **kwargs)
         """
         :param transition_pairs             list of lists containing date/amount transition pairs
         :param amount                       amount excluding transition pairs (before or if there are none)
@@ -205,14 +341,14 @@ class Periodic(FinSource):
 
 
 # ------------------------------------------MARKET SOURCES------------------------------------------------
-class Market(FinSource):
+class Market(FSource):
     """ source for stock market tickers
 
     :notes
     - yahoo tickers do not always match questrade tickers
     """
 
-    def __init__(self, tckr, name, ccy='CAD'):
+    def __init__(self, tckr, name, ccy='CAD', forecast=None, **kwargs):
         """
         :args
 
@@ -223,7 +359,7 @@ class Market(FinSource):
         - market sources assign native currency internally
         """
 
-        super().__init__(name)
+        super().__init__(name, forecast=forecast, **kwargs)
 
         # ticker/symbol
         self.tckr = tckr
@@ -253,8 +389,8 @@ class YahooMarket(Market):
     - yahoo tickers do not always match questrade tickers
      """
 
-    def __init__(self, tckr, name, ccy):
-        super().__init__(ccy=ccy, tckr=tckr, name=name)
+    def __init__(self, tckr, name, ccy, forecast=None, **kwargs):
+        super().__init__(ccy=ccy, tckr=tckr, name=name, forecast=forecast, **kwargs)
 
         # mapping columns of interest
         self.ylbl = 'Close'
@@ -275,8 +411,8 @@ class YahooMarket(Market):
 class QuestradeMarket(Market):
     """ small variation of yahoo market since tickers from both systems do not always match """
 
-    def __init__(self, tckr, name, ccy):
-        super().__init__(ccy=ccy, tckr=tckr, name=name)
+    def __init__(self, tckr, name, ccy, forecast=None, **kwargs):
+        super().__init__(ccy=ccy, tckr=tckr, name=name, forecast=forecast, **kwargs)
 
         # mapping columns of interest
         self.ylbl = 'Close'

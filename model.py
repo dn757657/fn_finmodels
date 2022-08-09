@@ -9,33 +9,154 @@ import matplotlib.pyplot as plt
 from df_utils import df_to_console
 
 
-# TODO use all assets to make a big ol cashflow dataframe for validations requering entire cahs flow (such as min account balance)
+# TODO alias asset names?
+# TODO validate mappings
 
 
 class FinModel:
 
-    def __init__(self):
+    def __init__(self, name):
         self.assets = dict()
+        self.data = pd.DataFrame()
+
+        # mapping structure
+        # dict for each asset with asset.name as key
+        # each value pair is a dict containing mappings
+        # keys include inflow, outflow and budget
+        # each is a list of asset names
+        self.asset_maps = dict()
+
+        self.name = name
+        self.net_ylbl = name + '_net'
+
+        # need to run this whenever there is processing to update
+        self.aliased_ylbls = self.alias_ylbls(self.assets)
         # self.validators = dict()
 
+    def alias_ylbls(self, objects):
+        aliased = dict()
+        for obj in objects:
+            aliased[obj.name] = obj.ylbl + "_" + obj.name
+
+        return aliased
+
     def add_assets(self, assets):
-        """
-        :param assets:      asset objects
-        :param x:           asset.data columns containing x data
-        :param y:           asset.data
-        :return:
-        """
         if not isinstance(assets, list):
             assets = [assets]
 
-        dassets2add = dict()
         for asset in assets:
-            dassets2add[asset.name] = asset
-
-        for key in dassets2add:
-            self.assets[key] = dassets2add[key]
+            self.assets[asset.name] = asset
 
         return
+
+    def evaluate(self, start, end, freq):
+        """ evaluate model and store as dateindex based df in self.data
+
+        freq must be compatible pandas date range frequency aka 1D
+        """
+        # TODO validate mappings
+        # TODO budget mapping
+
+        # get eval points/sample series
+        eval_at = wrapped_date_range(pd.date_range(start=start,
+                                                   end=end,
+                                                   freq=freq),
+                                     freq=freq)
+
+        for key in self.assets.keys():
+            asset = self.assets[key]
+            asset_sample_df = asset.sample(sample_at=eval_at)
+
+            # TODO flows as objects
+            # # only need flows if future dates evaluated
+            # asset_sample_max_date = asset_sample_df.index.max()
+            # eval_max_date = eval_at.max()
+
+            # if eval_max_date > asset_sample_max_date:
+            #     # process asset via maps to other assets
+            #     if key in self.asset_maps.keys():
+            #         asset_maps = self.asset_maps[key]
+            #
+            #         # sample and merge flows
+            #         flows = ['inflows', 'outflows']
+            #         for flow in flows:
+            #             if flow in asset_maps.keys():
+            #                 for flow_key in asset_maps[flow]:
+            #                     flow_asset = self.assets[flow_key]
+            #                     flow_sample_df = flow_asset.sample(sample_at=eval_at)  # get flow sample
+            #                     # flow_sample_df = flow_sample_df.loc[:eval_at.max()]
+            #
+            #                     # merge flow sample to asset_sample
+            #                     asset_sample_df = pd.merge(asset_sample_df,
+            #                                                flow_sample_df,
+            #                                                left_index=True,
+            #                                                right_index=True,
+            #                                                how='outer')
+            #
+            #                     aliased_inflow_ylbl = self.aliased_ylbls[flow_asset.name]
+            #                     # rename flow_asset col to aliased
+            #                     asset_sample_df = asset_sample_df.rename(column={flow_asset.ylbl: aliased_inflow_ylbl})
+            #                     # add flow data to sample - invert if outflow
+            #                     if flow == 'outflow':
+            #                         asset_sample_df[aliased_inflow_ylbl] = asset_sample_df[aliased_inflow_ylbl] * -1
+            #
+            #                     # only add future flow to asset total!
+            #                     asset_sample_df[asset.ylbl] = asset_sample_df[asset.ylbl] + \
+            #                                                   asset_sample_df[aliased_inflow_ylbl].loc[:eval_at.max()]
+
+            # combine asset into data
+            self.merge_sample(asset_sample_df, asset.ylbl, self.aliased_ylbls[asset.ylbl])
+
+
+        return
+
+    def eval_net(self):
+        """ add model net column using keys in self.assets to denote which assets are net contributors """
+
+        for key in self.assets.keys():
+            asset = self.assets[key]
+
+            # add samples to model_ylbl aka net
+            if self.net_ylbl in self.data.columns:
+                self.data.fillna(0, inplace=True)
+                self.data[self.net_ylbl] = self.data[self.net_ylbl] + self.data[self.aliased_ylbls[asset.name]]
+            else:
+                self.data[self.net_ylbl] = self.data[self.aliased_ylbls[asset.name]]
+
+        return
+
+    def merge_sample(self, asset_sample_df, asset_ylbl, aliased_asset_ylbl):
+        """ combine asset sample into self.data and rename col as aliased """
+
+        # rename asset y as aliased - prevent duplicate naming
+        self.data = self.data.rename(columns={asset_ylbl: aliased_asset_ylbl})
+        # combine asset into data
+        if not self.data.empty:
+            # merge sample data into model data
+            self.data = pd.merge(self.data, asset_sample_df[aliased_asset_ylbl],
+                                 left_index=True, right_index=True, how='outer')
+        else:
+            self.data = asset_sample_df[aliased_asset_ylbl]
+
+        return
+
+    def apply_maps(self):
+        """ apply modelled asset maps to asset sample """
+
+        return
+
+    # def add_assets(self, assets):
+    #     """
+    #     add asset objects to model
+    #     :param assets:      asset objects
+    #     """
+    #     if not isinstance(assets, list):
+    #         assets = [assets]
+    #
+    #     for asset in assets:
+    #         self.assets[asset.name] = asset
+    #
+    #     return
 
     # def add_validator(self, validators):
     #     if not isinstance(validators, list):
@@ -219,26 +340,38 @@ class FinModel:
         # reorder and return with diff column and both asset y columns
         return validate_df
 
-    def plot_assets(self, sample_at, assets=None, norm_freq=None, norm_at=None, sub=None):
+    def plot_model(self, start, end, freq):
         """ plot assets using matplotlib at requested sample points """
 
-        if not assets:
-            assets = self.assets.keys()
+        # TODO update this func
+
+        # if not assets:
+        #     assets = self.assets.keys()
+
+        eval_at = wrapped_date_range(pd.date_range(start=start,
+                                                   end=end,
+                                                   freq=freq),
+                                     freq=freq)
 
         fig = plt.figure()
         ax = fig.add_subplot(1, 1, 1)
 
-        for a in assets:
+        for a in self.assets:
             asset = self.assets[a]
-            sample = asset.sample(sample_at)
+            sample = asset.sample(eval_at)
             ax.plot_date(sample.index, sample[asset.ylbl], '-', label=asset.name)  # add asset output
 
-            if sub:  # graph sources within asset as well (sub-assets)
-                if len(asset.sources) > 1:
-                    for source in asset.sources:
-                        ax.plot_date(sample.index,
-                                     sample[asset.source_ylbl_aliased[source.name]],
-                                     '-', label=source.name)
+            for source in asset.sources:
+                # sample = source.sample(start=start, end=end)
+                ylbl = asset.aliased_ylbls[source.name]
+                ax.plot_date(sample.index, sample[ylbl], '-', label=source.name)
+
+            # if sub:  # graph sources within asset as well (sub-assets)
+            #     if len(asset.sources) > 1:
+            #         for source in asset.sources:
+            #             ax.plot_date(sample.index,
+            #                          sample[asset.source_ylbl_aliased[source.name]],
+            #                          '-', label=source.name)
 
         plt.legend()
         plt.grid()

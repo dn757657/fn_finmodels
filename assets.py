@@ -19,9 +19,55 @@ from dn_qtrade.questrade_2 import QTAccount
 from dn_crypto.crypto2 import cryptoWallet
 from dn_pricing.pricing import get_price, get_latest_price
 
+"""
+Component:
+    - sample
+    - forecast
+    - sources (can have multiple?)
+    
+    Asset:
+        - has inflows and outflows as objects (inflow is summed, outflow is negated and then summed)
+        - has own forecast, not just flows, to predict value change of asset itself
+        
+        Process:
+        - sample all sources
+        - sample flows if future
+        - interpolate samples and flows if flows
+        - sum all into asset_ylbl
+    Flow:
+        - has to and from parent assets
+        - when sampled by asset, only future data is used
+"""
+
+# TODO notes next time:
+    # back to old way, flows as objects
+    # assets and flows have sources
+    # use same sample func and pass in object lists to be sampled
+    # then in flows apply inflow and outflow modifications
+    # interpolate also using object lists passed in
+    # this way asset and flows remain seperate and can be used in model differently
+    # what if flows are incorporated at model level?? - this  might be the best way forwards
+        # this would mean that FAsset does not contain flows but they are assigned in the model?
+        # flows are simply assets assigned as flows in the model
+        # flows could be a dict of dicts using assets as keys, and inflow/outflows as sub keys and asset names
+        # for flows as values? - same for validations?
+
+    # create flow object essentially same as Asset - now flows are assets
+    # finish FAsset
+
+    # this way flows and assets can be treated independantly in the model but also work together?
+    # idea - use source as a forecast by creating a forecast object to alias? aka budgeting
+
+    # new paradigm then:
+        # model contains assets
+            # model contains validation and flow assignments and compiles
+        # assets contain sources and sampling utility
+        # sources contain data and forecast objects
+        # forecasts do what you tihink they would
+
 
 class FAsset:
-    def __init__(self, name, interp_type, sources, forecast=None, cumulative=None):
+    def __init__(self, name, interp_type, sources):
         """
         Attrs:
             data            df sampled from sources, if multiple sources
@@ -37,13 +83,9 @@ class FAsset:
         # set attributes
         self.name = name
         self.sources = sources
-        self.forecast = forecast
 
         # generated/output
         self.data = pd.DataFrame()
-
-        # options
-        self.cumulative = cumulative
 
         # internal
         self.ylbl = self.name+'_y'
@@ -55,71 +97,159 @@ class FAsset:
             logging.error('interp type must be in [%s]' % ', '.join(map(str, interp_types)))
 
         # alias source y labels to prevent duplicates
-        self.source_ylbl_aliased = dict()
-        for source in self.sources:
-            self.source_ylbl_aliased[source.name] = source.ylbl + "_" + source.name
+        self.aliased_ylbls = self.alias_ylbls(self.sources)
+
+    def alias_ylbls(self, objects):
+        aliased = dict()
+        for obj in objects:
+            aliased[obj.name] = obj.ylbl + "_" + obj.name
+
+        return aliased
 
     def sample(self, sample_at):
-        """ sample all sources and set to self.data, sum all sources ylbl into asset ylbl col
+        """ sample component and return self.data after setting sample as self.data as dataframe
+            access component data via self.ylbl
+            always datetime index
+            """
+        # if sampling more than one set of components will need some sort of merge function for samples
+        self.data = self.sample_components(sample_at=sample_at,
+                                           components=self.sources,
+                                           aliased_component_ylbls=self.aliased_ylbls)
 
-        :notes
-        use sample at as optional interpolation points??
-        """
+        # all samples must be merged to self.data prior to calling interpolate and sum samples
+        self.interpolate(sample_at=sample_at)
+
+        self.sum_samples()
+        return self.data
+
+    # def sample_all(self, sample_at):
+    #     combined_sources_sample = self.sample_sources(sample_at=sample_at)
+    #     self.data = combined_sources_sample
+
+    # TODO depricated?
+    # def sample_sources(self, sample_at):
+    #     """ sample all sources and return sources_sample, rename source columns as aliased
+    #
+    #     :notes
+    #     use sample at as optional interpolation points??
+    #     """
+    #     sources_sample = self.sample_sub_obj(sample_at=sample_at,
+    #                                          objects=self.sources,
+    #                                          objects_ylbls_aliased=self.source_ylbl_aliased)
+    #     # sample_at = pd.Series(sample_at)
+    #     #
+    #     # # sample sources and rename ylbl to asset ylbl (instead of source ylbl)
+    #     # # sum all source ylbl cols into asset ylbl
+    #     # sample_start = sample_at.min()
+    #     # sample_end = sample_at.max()
+    #     # for source in self.sources:
+    #     #     # sample the source
+    #     #     sample = source.sample(start=sample_start, end=sample_end)
+    #     #     # dropping duplicate index at the beginning is important
+    #     #     # this ensures the most recent datapoint is kept given duplicate index
+    #     #     # given the data is in the correct order when initiated
+    #     #     sample = sample[~sample.index.duplicated(keep='last')]
+    #     #
+    #     #     # # apply asset modifiers to source sample
+    #     #     # if self.cumulative:
+    #     #     #     sample = self._to_cumulative(sample, source.ylbl)
+    #     #     #     # sample = self._to_cumulative(sample, source.ylbl)
+    #     #     #
+    #     #     # # forecast individual source using asset forecast model
+    #     #     # forecast_df = self.get_forecast(sample_at=sample_at, training_df=sample[source.ylbl])
+    #     #     #
+    #     #     # # add forecast to sample if exists
+    #     #     # if not forecast_df.empty:
+    #     #     #     sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+    #     #     #     # sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+    #     #     # else:
+    #     #     #     logging.error("Cannot sample future without forecast")
+    #     #     #     return
+    #     #
+    #     #     # add sample to sources_sample
+    #     #     if not sources_sample.empty:
+    #     #         # combine the source data into asset total
+    #     #         sources_sample = pd.merge(sources_sample, sample, left_index=True, right_index=True, how='outer')
+    #     #     else:
+    #     #         sources_sample = sample
+    #     #
+    #     #     # rename source y as aliased
+    #     #     sources_sample = sources_sample.rename(columns={source.ylbl: self.source_ylbl_aliased[source.name]})
+    #
+    #     # for source in self.sources:  # first get all samples, then since all dates are included, interpolate
+    #     #     # interpolate the sources after all dates have been added or else odd behaviour/rogue zeroes
+    #     #     self.data = self.interpolate(sample_at=sample_at,
+    #     #                                  ylbl=self.source_ylbl_aliased[source.name],
+    #     #                                  sample=self.data)
+    #     #
+    #     #     if self.ylbl in self.data.columns:
+    #     #         self.data.fillna(0, inplace=True)
+    #     #         self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.source_ylbl_aliased[source.name]]
+    #     #     else:
+    #     #         self.data[self.ylbl] = self.data[self.source_ylbl_aliased[source.name]]
+    #
+    #     return sources_sample
+
+    def sample_components(self, sample_at, components, aliased_component_ylbls):
+        """ sample all sub components within the component """
+
+        combined_comp_samples = pd.DataFrame()
         sample_at = pd.Series(sample_at)
 
         # sample sources and rename ylbl to asset ylbl (instead of source ylbl)
         # sum all source ylbl cols into asset ylbl
         sample_start = sample_at.min()
         sample_end = sample_at.max()
-        for source in self.sources:
+        for comp in components:
             # sample the source
-            sample = source.sample(start=sample_start, end=sample_end)
+            sample = comp.sample(start=sample_start, end=sample_end)
             # dropping duplicate index at the beginning is important
             # this ensures the most recent datapoint is kept given duplicate index
             # given the data is in the correct order when initiated
             sample = sample[~sample.index.duplicated(keep='last')]
 
-            # apply asset modifiers to source sample
-            if self.cumulative:
-                sample = self._to_cumulative(sample, source.ylbl)
-                # sample = self._to_cumulative(sample, source.ylbl)
+            # # apply asset modifiers to source sample
+            # if self.cumulative:
+            #     sample = self._to_cumulative(sample, source.ylbl)
+            #     # sample = self._to_cumulative(sample, source.ylbl)
+            #
+            # # forecast individual source using asset forecast model
+            # forecast_df = self.get_forecast(sample_at=sample_at, training_df=sample[source.ylbl])
+            #
+            # # add forecast to sample if exists
+            # if not forecast_df.empty:
+            #     sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+            #     # sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+            # else:
+            #     logging.error("Cannot sample future without forecast")
+            #     return
 
-            # forecast individual source using asset forecast model
-            forecast_df = self.get_forecast(sample_at=sample_at, training_df=sample[source.ylbl])
-
-            # add forecast to sample if exists
-            if not forecast_df.empty:
-                sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
-                # sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+            # add sample to sources_sample
+            if not combined_comp_samples.empty:
+                # combine the component sample into the combined df
+                combined_comp_samples = pd.merge(combined_comp_samples, sample, left_index=True, right_index=True, how='outer')
             else:
-                logging.error("Cannot sample future without forecast")
-                return
-
-            # add sample to asset data
-            if not self.data.empty:
-                # combine the source data into asset total
-                self.data = pd.merge(self.data, sample, left_index=True, right_index=True, how='outer')
-            else:
-                self.data = sample
+                combined_comp_samples = sample
 
             # rename source y as aliased
-            self.data = self.data.rename(columns={source.ylbl: self.source_ylbl_aliased[source.name]})
+            combined_comp_samples = combined_comp_samples.rename(columns={comp.ylbl: aliased_component_ylbls[comp.name]})
 
-        for source in self.sources:  # first get all samples, then since all dates are included, interpolate
-            # interpolate the sources after all dates have been added or else odd behaviour/rogue zeroes
-            self.data = self.interpolate(sample_at=sample_at,
-                                         ylbl=self.source_ylbl_aliased[source.name],
-                                         sample=self.data)
+        return combined_comp_samples
 
+    def sum_samples(self):
+        """ sum all component samples and flow samples into asset_ylbl (self) """
+
+        for comp in self.sources:
+            # add samples to asset_ylbl
             if self.ylbl in self.data.columns:
                 self.data.fillna(0, inplace=True)
-                self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.source_ylbl_aliased[source.name]]
+                self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.aliased_ylbls[comp.name]]
             else:
-                self.data[self.ylbl] = self.data[self.source_ylbl_aliased[source.name]]
+                self.data[self.ylbl] = self.data[self.aliased_ylbls[comp.name]]
 
-        return self.data
+        return
 
-    def interpolate(self, sample_at, ylbl, sample=pd.DataFrame()):
+    def interpolate(self, sample_at):
         """
         interpolate sample or self.data, ensuring all sample_at dates are in returned df using interp_type
 
@@ -127,63 +257,205 @@ class FAsset:
         :param sample:
         :return:
         """
-        if sample.empty:
-            sample = self.data
-            ylbl = self.ylbl
+        # if self.data.empty:
+        #     self.data = self.sample(sample_at)
 
-        # add requested dates to data_df if they are not there already
-        # create df from parsed samples to add to data_df
-        sample_at_df = pd.DataFrame(sample_at)
-        # remove dates from requested sample that are already in sample data
-        parsed_sample_at_df = sample_at_df[~sample_at_df[0].isin(sample.index)]
-        parsed_sample_at_df.set_index(0, drop=True, inplace=True)
+        sample = self.data
+        for source in self.sources:
+            ylbl = self.aliased_ylbls[source.name]
+            # interpolate the sources after all dates have been added or else odd behaviour/rogue zeroes
+            # add requested dates to data_df if they are not there already
+            # create df from parsed samples to add to data_df
+            sample_at_df = pd.DataFrame(sample_at)
+            # remove dates from requested sample that are already in sample data
+            parsed_sample_at_df = sample_at_df[~sample_at_df[0].isin(sample.index)]
+            parsed_sample_at_df.set_index(0, drop=True, inplace=True)
 
-        sample = pd.merge(sample, parsed_sample_at_df, 'outer', left_index=True, right_index=True)
-        sample = sample.sort_index()
+            sample = pd.merge(sample, parsed_sample_at_df, 'outer', left_index=True, right_index=True)
+            sample = sample.sort_index()
 
-        # interpolate missing values from sample
-        if self.interp_type == 'to_previous':
-            sample = self.interp_2_prev(sample, ylbl)
-        elif self.interp_type == 'linear':
-            sample = self.interp_linear(sample, ylbl)
+            # interpolate missing values from sample
+            if self.interp_type == 'to_previous':
+                sample = self.interp_2_prev(sample, ylbl)
+            elif self.interp_type == 'linear':
+                sample = self.interp_linear(sample, ylbl)
 
-        return sample
+        self.data = sample
 
-    def get_forecast(self, sample_at, training_df=pd.DataFrame()):
-        """ :return data frame with forecasted y within start -> end window as freq=D
-        (could resolve freq with code later)
-        df has x and y cols along with integer index
+        return
 
-        can be used to forecast all?
+    def interp_2_prev(self, df, ylbl):
+        """ set all nan in self.y to precceeding value """
 
-        :arg
-            start           datetime object where forecast starts
-            end             datetime object where forecast ends
-        """
-        if training_df.empty:
-            if self.data.empty:
-                self.sample(sample_at)
+        df[ylbl] = df[ylbl].fillna(method='ffill')
 
-            training_df = self.data
+        return df
 
-        # get start and end bounds for forecasting
-        # get max date in available data
-        max_data_date = training_df.index.max()
-        # get max sample date, cannot assume sample_at is sorted
-        max_sample_date = sample_at.max()
+    def interp_linear(self, df, ylbl, interp_index=None):
+        """ interpolate linearly and fill nan values in self.y_col
+         Args:
+             interp_index       str label of index to interp to
+         """
+        df_copy = df.copy()
+        if interp_index:  # if not interpolating using index (some other column), set as index
+            df_copy = df_copy.set_index(df[interp_index])
 
-        # if sample is future than forecast
-        if self.forecast:
-            if max_sample_date > max_data_date:
-                self.forecast.get_forecast(start=max_data_date, end=max_sample_date, training_df=training_df)
-                forecast_df = self.forecast.forecast
-
-            else:
-                forecast_df = pd.DataFrame()
+        if is_numeric_dtype(df[interp_index]):
+            df[ylbl] = df_copy[ylbl].interpolate(method='linear').values
         else:
-            forecast_df = pd.DataFrame
+            df[ylbl] = df_copy[ylbl].interpolate(method='time').values
+            # df[self.y] = df_copy[self.y].values  # values required due to misaligned index
 
-        return forecast_df
+        return df
+
+
+# class FAsset(FComponent):
+#     def __init__(self, name, interp_type, components):
+#         """
+#
+#         """
+#
+#         super().__init__(name=name,
+#                          interp_type=interp_type,
+#                          components=components)
+#
+#         # alias source y labels to prevent duplicates
+#         self.inflows_ylbl_aliased = self.alias_ylbls(self.inflows)
+#         self.outflows_ylbl_aliased = self.alias_ylbls(self.outflows)
+#
+#     def sample_all(self, sample_at):
+#         super().sample_all(sample_at=sample_at)
+#
+#         # sample flows also
+#
+#     def sample_flows(self, sample_at):
+#         combined_inflows_samples = self.sample_sub_obj(sample_at=sample_at,
+#                                                        objects=self.inflows,
+#                                                        objects_ylbls_aliased=self.inflows_ylbl_aliased)
+#
+#         combined_outflows_samples = self.sample_sub_obj(sample_at=sample_at,
+#                                                         objects=self.outflows,
+#                                                         objects_ylbls_aliased=self.outflows_ylbl_aliased)
+
+    # def sample_sources(self, sample_at):
+    #     """ sample all sources and return sources_sample, rename source columns as aliased
+    #
+    #     :notes
+    #     use sample at as optional interpolation points??
+    #     """
+    #     sources_sample = pd.DataFrame()
+    #     sample_at = pd.Series(sample_at)
+    #
+    #     # sample sources and rename ylbl to asset ylbl (instead of source ylbl)
+    #     # sum all source ylbl cols into asset ylbl
+    #     sample_start = sample_at.min()
+    #     sample_end = sample_at.max()
+    #     for source in self.sources:
+    #         # sample the source
+    #         sample = source.sample(start=sample_start, end=sample_end)
+    #         # dropping duplicate index at the beginning is important
+    #         # this ensures the most recent datapoint is kept given duplicate index
+    #         # given the data is in the correct order when initiated
+    #         sample = sample[~sample.index.duplicated(keep='last')]
+    #
+    #         # apply asset modifiers to source sample
+    #         if self.cumulative:
+    #             sample = self._to_cumulative(sample, source.ylbl)
+    #             # sample = self._to_cumulative(sample, source.ylbl)
+    #
+    #         # # forecast individual source using asset forecast model
+    #         # forecast_df = self.get_forecast(sample_at=sample_at, training_df=sample[source.ylbl])
+    #         #
+    #         # # add forecast to sample if exists
+    #         # if not forecast_df.empty:
+    #         #     sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+    #         #     # sample = pd.concat([forecast_df, sample]).drop_duplicates(keep=False)
+    #         # else:
+    #         #     logging.error("Cannot sample future without forecast")
+    #         #     return
+    #
+    #         # add sample to asset data
+    #         if not sources_sample.empty:
+    #             # combine the source data into asset total
+    #             sources_sample = pd.merge(sources_sample, sample, left_index=True, right_index=True, how='outer')
+    #         else:
+    #             sources_sample = sample
+    #
+    #         # rename source y as aliased
+    #         sources_sample = sources_sample.rename(columns={source.ylbl: self.source_ylbl_aliased[source.name]})
+    #
+    #     # for source in self.sources:  # first get all samples, then since all dates are included, interpolate
+    #     #     # interpolate the sources after all dates have been added or else odd behaviour/rogue zeroes
+    #     #     self.data = self.interpolate(sample_at=sample_at,
+    #     #                                  ylbl=self.source_ylbl_aliased[source.name],
+    #     #                                  sample=self.data)
+    #     #
+    #     #     if self.ylbl in self.data.columns:
+    #     #         self.data.fillna(0, inplace=True)
+    #     #         self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.source_ylbl_aliased[source.name]]
+    #     #     else:
+    #     #         self.data[self.ylbl] = self.data[self.source_ylbl_aliased[source.name]]
+    #     sources_sample = super().sample_sources(sample_at=sample_at)
+    #     return sources_sample
+
+    # def interpolate(self, sample_at, ylbl, sample=pd.DataFrame()):
+    #     """
+    #     interpolate sample or self.data, ensuring all sample_at dates are in returned df using interp_type
+    #
+    #     :param sample_at:
+    #     :param sample:
+    #     :return:
+    #     """
+    #     interpolated = super().interpolate(sample_at=sample_at, ylbl=ylbl, sample=sample)
+    #
+    #     return interpolated
+
+    # def get_forecast(self, sample_at, training_df=pd.DataFrame()):
+    #     """ :return data frame with forecasted y within start -> end window as freq=D
+    #     (could resolve freq with code later)
+    #     df has x and y cols along with integer index
+    #
+    #     can be used to forecast all?
+    #
+    #     :arg
+    #         start           datetime object where forecast starts
+    #         end             datetime object where forecast ends
+    #     """
+    #     if training_df.empty:
+    #         if self.data.empty:
+    #             self.sample(sample_at)
+    #
+    #         training_df = self.data
+    #
+    #     # get start and end bounds for forecasting
+    #     # get max date in available data
+    #     max_data_date = training_df.index.max()
+    #     # get max sample date, cannot assume sample_at is sorted
+    #     max_sample_date = sample_at.max()
+    #
+    #     # if sample is future than forecast
+    #     if self.forecast:
+    #         if max_sample_date > max_data_date:
+    #             self.forecast.get_forecast(start=max_data_date, end=max_sample_date, training_df=training_df)
+    #             forecast_df = self.forecast.forecast
+    #
+    #         else:
+    #             forecast_df = pd.DataFrame()
+    #     else:
+    #         forecast_df = pd.DataFrame
+    #
+    #     return forecast_df
+
+    # def sum_asset(self):
+    #     """ sum all source samples and flow samples into asset_ylbl (self)"""
+    #
+    #     for source in self.sources:
+    #         # add samples to asset_ylbl
+    #         if self.ylbl in self.data.columns:
+    #             self.data.fillna(0, inplace=True)
+    #             self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.source_ylbl_aliased[source.name]]
+    #         else:
+    #             self.data[self.ylbl] = self.data[self.source_ylbl_aliased[source.name]]
 
     # old sample function
     # def sample(self, sample_at, norm_at=None, norm_freq=None):
@@ -276,170 +548,171 @@ class FAsset:
     #
     #     return sample_data_df[[self.x, self.y]]
 
-    def normalize_data(self, to_norm_data, norm_at=None, norm_freq=None):
-        """
-            asset is normalized to itself, using the norm_freq as the start point for each new
-            normalized period.
+    # def normalize_data(self, to_norm_data, norm_at=None, norm_freq=None):
+    #     """
+    #         asset is normalized to itself, using the norm_freq as the start point for each new
+    #         normalized period.
+    #
+    #     :arg
+    #         to_norm_data        asset data to be normalized
+    #         norm_at             list of x column points where data is normalized
+    #         norm_freq           pandas compatible frequency to generate norm_at
+    #
+    #     :notes
+    #         for now we assume y is always normalized using x
+    #         must have either norm_at or norm_freq
+    #
+    #         what is normalization?
+    #         -aligning the datasets at given intervals, negating the cumulative effects of a dataset
+    #         -essentially only for cumulative data?
+    #
+    #     :strategy
+    #         nothing really changes about output dataset! Simply data manipulations for display?
+    #         get last value of previous period in normalization range requested and apply to next
+    #         period
+    #     """
+    #
+    #     # parse norm points
+    #     norm_at = self.parse_norm_at(norm_at, to_norm_data, norm_freq)
+    #     # shift all norm point back one day, to get final value of previous norm period
+    #     norm_at_shifted = list()
+    #     for i in range(0, len(norm_at)):
+    #         norm_at_shifted.append(norm_at[i] - pd.Timedelta(days=1))
+    #     norm_at = norm_at_shifted
+    #
+    #     # sample self at adjusted norm points
+    #     norm_sample_df = self.sample(norm_at)
+    #     # add day so that final value of each norm period is applied to the NEXT norm period
+    #     norm_sample_df[self.x] = norm_sample_df[self.x] + pd.Timedelta(days=1)
+    #
+    #     # merge both samples and get differences at norm points
+    #     merged_df = pd.merge(to_norm_data, norm_sample_df, on=self.x, how='outer')
+    #     merged_df.sort_values([self.x], inplace=True)
+    #
+    #     # ffill values from final values sample such that they are applied to entire sample period
+    #     merged_df.iloc[:, 2].fillna(method='ffill', inplace=True)
+    #     merged_df.iloc[:, 2].fillna(0, inplace=True)  # fill rest with zeroes or you get nan
+    #     merged_df = merged_df.rename(columns={merged_df.columns[1]: self.y})
+    #     merged_df[self.y] = merged_df[self.y] - merged_df.iloc[:, 2]
+    #
+    #     # return adjusted df at original points with original columns
+    #     final_df = merged_df[merged_df[self.x].isin(to_norm_data[self.x])]
+    #
+    #     final_df = final_df[[self.x, self.y]]
+    #     return final_df
 
-        :arg
-            to_norm_data        asset data to be normalized
-            norm_at             list of x column points where data is normalized
-            norm_freq           pandas compatible frequency to generate norm_at
+    # def parse_norm_at(self, norm_at, to_norm_data, norm_freq):
+    #     """ check or generate norm_at - norm at must be contained by both norm_to and to_norm data
+    #
+    #      :returns
+    #         norm_at as list, or none if requested norm_at is invalid
+    #      """
+    #
+    #     if not norm_at:
+    #         norm_at = self.get_norm_at(to_norm_data, norm_freq)
+    #
+    #     # check if norm_at in both data sources provided
+    #     # norm_to_sample_df = norm_to_asset.sample(norm_at)
+    #     norm_to_df = pd.DataFrame().reindex(columns=self.data.columns)
+    #     norm_to_df[self.x] = norm_at
+    #
+    #     # if norm to must not contain any past dates concerning asset datasets
+    #     # if norm_to_df[norm_to_asset.x].min() < norm_to_sample_df[norm_to_asset.x].min():
+    #     #     return None
+    #     if norm_to_df[self.x].min() < self.data[self.x].min():
+    #         if self.generative:  # if generative
+    #             return norm_at
+    #         else:
+    #             return None
+    #     else:
+    #         return norm_at
 
-        :notes
-            for now we assume y is always normalized using x
-            must have either norm_at or norm_freq
-
-            what is normalization?
-            -aligning the datasets at given intervals, negating the cumulative effects of a dataset
-            -essentially only for cumulative data?
-
-        :strategy
-            nothing really changes about output dataset! Simply data manipulations for display?
-            get last value of previous period in normalization range requested and apply to next
-            period
-        """
-
-        # parse norm points
-        norm_at = self.parse_norm_at(norm_at, to_norm_data, norm_freq)
-        # shift all norm point back one day, to get final value of previous norm period
-        norm_at_shifted = list()
-        for i in range(0, len(norm_at)):
-            norm_at_shifted.append(norm_at[i] - pd.Timedelta(days=1))
-        norm_at = norm_at_shifted
-
-        # sample self at adjusted norm points
-        norm_sample_df = self.sample(norm_at)
-        # add day so that final value of each norm period is applied to the NEXT norm period
-        norm_sample_df[self.x] = norm_sample_df[self.x] + pd.Timedelta(days=1)
-
-        # merge both samples and get differences at norm points
-        merged_df = pd.merge(to_norm_data, norm_sample_df, on=self.x, how='outer')
-        merged_df.sort_values([self.x], inplace=True)
-
-        # ffill values from final values sample such that they are applied to entire sample period
-        merged_df.iloc[:, 2].fillna(method='ffill', inplace=True)
-        merged_df.iloc[:, 2].fillna(0, inplace=True)  # fill rest with zeroes or you get nan
-        merged_df = merged_df.rename(columns={merged_df.columns[1]: self.y})
-        merged_df[self.y] = merged_df[self.y] - merged_df.iloc[:, 2]
-
-        # return adjusted df at original points with original columns
-        final_df = merged_df[merged_df[self.x].isin(to_norm_data[self.x])]
-
-        final_df = final_df[[self.x, self.y]]
-        return final_df
-
-    def parse_norm_at(self, norm_at, to_norm_data, norm_freq):
-        """ check or generate norm_at - norm at must be contained by both norm_to and to_norm data
-
-         :returns
-            norm_at as list, or none if requested norm_at is invalid
-         """
-
-        if not norm_at:
-            norm_at = self.get_norm_at(to_norm_data, norm_freq)
-
-        # check if norm_at in both data sources provided
-        # norm_to_sample_df = norm_to_asset.sample(norm_at)
-        norm_to_df = pd.DataFrame().reindex(columns=self.data.columns)
-        norm_to_df[self.x] = norm_at
-
-        # if norm to must not contain any past dates concerning asset datasets
-        # if norm_to_df[norm_to_asset.x].min() < norm_to_sample_df[norm_to_asset.x].min():
-        #     return None
-        if norm_to_df[self.x].min() < self.data[self.x].min():
-            if self.generative:  # if generative
-                return norm_at
-            else:
-                return None
-        else:
-            return norm_at
-
-    def get_norm_at(self, to_norm_data, norm_freq):
-        """ find upper and lower bounds of data - generate norm_at using bounds and freq
-
-        :returns
-            list containing indicies to normalize data at
-        """
-
-        upper = to_norm_data[self.x].max()
-        lower = to_norm_data[self.x].min()
-
-        norm_at = wrapped_date_range([upper, lower], norm_freq)
-        norm_at = norm_at.tolist()
-
-        return norm_at
+    # def get_norm_at(self, to_norm_data, norm_freq):
+    #     """ find upper and lower bounds of data - generate norm_at using bounds and freq
+    #
+    #     :returns
+    #         list containing indicies to normalize data at
+    #     """
+    #
+    #     upper = to_norm_data[self.x].max()
+    #     lower = to_norm_data[self.x].min()
+    #
+    #     norm_at = wrapped_date_range([upper, lower], norm_freq)
+    #     norm_at = norm_at.tolist()
+    #
+    #     return norm_at
 
     # TODO move interp functions to new file for more complex interps?
-    def interp_2_prev(self, df, ylbl):
-        """ set all nan in self.y to precceeding value """
 
-        df[ylbl] = df[ylbl].fillna(method='ffill')
+    # def interp_2_prev(self, df, ylbl):
+    #     """ set all nan in self.y to precceeding value """
+    #
+    #     df[ylbl] = df[ylbl].fillna(method='ffill')
+    #
+    #     return df
+    #
+    # def interp_linear(self, df, ylbl, interp_index=None):
+    #     """ interpolate linearly and fill nan values in self.y_col
+    #      Args:
+    #          interp_index       str label of index to interp to
+    #      """
+    #     df_copy = df.copy()
+    #     if interp_index:  # if not interpolating using index (some other column), set as index
+    #         df_copy = df_copy.set_index(df[interp_index])
+    #
+    #     if is_numeric_dtype(df[interp_index]):
+    #         df[ylbl] = df_copy[ylbl].interpolate(method='linear').values
+    #     else:
+    #         df[ylbl] = df_copy[ylbl].interpolate(method='time').values
+    #         # df[self.y] = df_copy[self.y].values  # values required due to misaligned index
+    #
+    #     return df
+    #
+    # def parse_sample(self, sample_at):
+    #     """ elim duplicates from requested samples and try to match asset index dtype """
+    #
+    #     if not isinstance(sample_at, list):
+    #         sample_at = [sample_at]
+    #
+    #     sample_at.sort()
+    #     # convert non numeric samples to pandas Timestamp
+    #     parsed_sample_at = list()
+    #     if not is_numeric_dtype(self.data.index):
+    #         for sample in sample_at:
+    #             # only append unique values
+    #             if sample not in parsed_sample_at:
+    #                 parsed_sample_at.append(pd.Timestamp(sample))
+    #             else:
+    #                 continue
+    #     else:
+    #         # elim duplicates
+    #         parsed_sample_at = set(sample_at)
+    #
+    #     parsed_sample_at = list(parsed_sample_at)
+    #
+    #     return parsed_sample_at
 
-        return df
+    # def sample_2_df(self, sample_at):
+    #     """ transform sample_at list to dataframe with same columns as self.data """
+    #
+    #     # create blank dataframe same as dates_grouped
+    #     sample_df = pd.DataFrame().reindex(columns=self.data.columns)
+    #     # add sample_at values to x column
+    #     sample_df[self.x] = list(sample_at)
+    #
+    #     return sample_df
 
-    def interp_linear(self, df, ylbl, interp_index=None):
-        """ interpolate linearly and fill nan values in self.y_col
-         Args:
-             interp_index       str label of index to interp to
-         """
-        df_copy = df.copy()
-        if interp_index:  # if not interpolating using index (some other column), set as index
-            df_copy = df_copy.set_index(df[interp_index])
+    # def _to_cumulative(self, data, col):
+    #     """ convert y to cumulative sum column """
+    #
+    #     if is_numeric_dtype(data[col]):
+    #         data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
+    #     else:
+    #         logging.error("cannot sum non-numeric dtype")
+    #
+    #     return data
 
-        if is_numeric_dtype(df[interp_index]):
-            df[ylbl] = df_copy[ylbl].interpolate(method='linear').values
-        else:
-            df[ylbl] = df_copy[ylbl].interpolate(method='time').values
-            # df[self.y] = df_copy[self.y].values  # values required due to misaligned index
-
-        return df
-
-    def parse_sample(self, sample_at):
-        """ elim duplicates from requested samples and try to match asset index dtype """
-
-        if not isinstance(sample_at, list):
-            sample_at = [sample_at]
-
-        sample_at.sort()
-        # convert non numeric samples to pandas Timestamp
-        parsed_sample_at = list()
-        if not is_numeric_dtype(self.data.index):
-            for sample in sample_at:
-                # only append unique values
-                if sample not in parsed_sample_at:
-                    parsed_sample_at.append(pd.Timestamp(sample))
-                else:
-                    continue
-        else:
-            # elim duplicates
-            parsed_sample_at = set(sample_at)
-
-        parsed_sample_at = list(parsed_sample_at)
-
-        return parsed_sample_at
-
-    def sample_2_df(self, sample_at):
-        """ transform sample_at list to dataframe with same columns as self.data """
-
-        # create blank dataframe same as dates_grouped
-        sample_df = pd.DataFrame().reindex(columns=self.data.columns)
-        # add sample_at values to x column
-        sample_df[self.x] = list(sample_at)
-
-        return sample_df
-
-    def _to_cumulative(self, data, col):
-        """ convert y to cumulative sum column """
-
-        if is_numeric_dtype(data[col]):
-            data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
-        else:
-            logging.error("cannot sum non-numeric dtype")
-
-        return data
-# class StaticAsset(FAsset):
-
+# TODO when flows are samples they must return ready to be added directly to the asset, this defines inflow vs outflow
 
 class DFAsset(FAsset):
     """ Dataframe Asset """

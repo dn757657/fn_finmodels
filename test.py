@@ -297,11 +297,12 @@ def forecast_test():
     print()
 
 def new_main():
-    # TODO use assets as sources to form sub-assets/asset groups
     # TODO ASSETS vs CASHFLOWS - new paradigm??
     # TODO normalize samples? do we need this really?
     from sources import YahooMarket, Bpl_Txns
     from forecast import KatsProphet
+
+    get_categorized()
 
     # DEFINE DATES TO SAMPLE
     start = datetime.datetime.strptime('2021-06-12', '%Y-%m-%d')
@@ -312,32 +313,44 @@ def new_main():
     # DATE SAMPLES
     sample_at1 = pd.date_range(start=start, end=end, freq='MS').tolist()
 
-    # DEFINE SOURCES AND SAMPLES
-    food_spending_src = Bpl_Txns(name='food_spend', ccy_native='CAD', category='food')
-    fuel_spending_src = Bpl_Txns(name='fuel_spend', ccy_native='CAD', category='fuel')
-
     # FORECASTING
     # market_kats_forecast = KatsProphet('market_kats')
-    kats_forecast = KatsProphet('banking_kats')
+    kats_forecast = KatsProphet('standard_kats')
 
-    # ASSETS
-    food_spending_asset = FAsset(name='food_spending',
-                                 interp_type='to_previous',
-                                 sources=[food_spending_src],
-                                 forecast=kats_forecast,
+    # DEFINE SOURCES
+    categories = get_categorized()
+    refined_categories = ['food', 'fuel']
+    remaining_categories = [x for x in categories if x not in refined_categories]
+
+    food_spending_src = Bpl_Txns(name='food_spend', ccy_native='CAD', categories='food', forecast=kats_forecast,
                                  cumulative=True)
-    fuel_spending_asset = FAsset(name='fuel_spending',
-                                 interp_type='to_previous',
-                                 sources=[fuel_spending_src],
-                                 forecast=kats_forecast,
+
+    fuel_spending_src = Bpl_Txns(name='fuel_spend', ccy_native='CAD', categories='fuel', forecast=kats_forecast,
                                  cumulative=True)
+
+    banking_remainder = Bpl_Txns(name='banking_misc', ccy_native='CAD', categories=remaining_categories,
+                                 forecast=kats_forecast, cumlative=True)
+
+    # CREATE ASSETS FROM SOURCES
+    banking_all = FAsset('banking_all', 'to_previous', [food_spending_src, fuel_spending_src])
 
     # MODEL
-    model_1 = FinModel()
-    model_1.add_assets([food_spending_asset, fuel_spending_asset])
-    # TODO normalize option in date_range?
-    model_1.plot_assets(sample_at=pd.date_range(start=start, end=end, freq='1W'), sub=True)
+    model_1 = FinModel(name='model_1')
+    model_1.add_assets(banking_all)
+    model_1.plot_model(start=start,
+                       end=end,
+                       freq='1W')
 
+def get_categorized():
+    # TODO move to banking pipeline?? - needs overhaul
+    db = BplModel()
+    session = Session(db.engine)
+
+    categories = session.query(Category)
+    categories = sqlalch_2_df(categories)
+    categories = categories['cat_desc'].tolist()
+
+    return categories
 
 if __name__ == '__main__':
     new_main()

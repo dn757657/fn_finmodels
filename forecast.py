@@ -2,6 +2,8 @@ import pandas as pd
 from kats.consts import TimeSeriesData
 from kats.models.prophet import ProphetModel, ProphetParams
 
+from df_utils import wrapped_date_range
+
 
 class SingleIdx:
     """ forecast which uses a single index """
@@ -105,3 +107,24 @@ class KatsProphet(SingleIdx):
         self.model = m
 
         super().train(training_df)
+
+
+class AssetForecast(SingleIdx):
+    """ use an asset as a forecast """
+
+    def __init__(self, name, asset):
+        super().__init__(name=name)
+
+        self.asset = asset
+
+    def get_forecast(self, start, end, training_df):
+        super().get_forecast(start=start, end=end, training_df=training_df)
+
+        sample_at = wrapped_date_range(pd.date_range(start=start, end=end, freq='1D'), '1D')
+
+        fcst_df = self.asset.sample(sample_at=sample_at)
+        fcst_df = fcst_df.loc[:end]
+
+        self.forecast = fcst_df
+
+        return
