@@ -55,8 +55,33 @@ class SingleIdx:
         return days_diff
 
 
+class Static(SingleIdx):
+    """ forecast the last known training value forever """
+    def __init__(self, name):
+        super().__init__(name=name)
+
+    def get_forecast(self, start, end, training_df):
+
+        default_freq = '1D'
+        date_range = pd.date_range(start, end, freq=default_freq)
+        final_dr = wrapped_date_range(date_range, default_freq)
+
+        final_training_val = training_df.loc[training_df.index.max()]
+
+        if isinstance(final_training_val, pd.Series):
+            final_training_val = final_training_val.max()
+
+        training_df = training_df.reset_index()
+
+        fcst_df = pd.DataFrame({'index': final_dr, training_df.columns[1]: final_training_val})
+        fcst_df.set_index('index', drop=True, inplace=True)
+
+        self.forecast = fcst_df
+        return
+
+
 class KatsProphet(SingleIdx):
-    """  forecast using kats libbrary and Prophet model """
+    """  forecast using kats library and Prophet model """
 
     def __init__(self, name):
         super().__init__(name=name)
@@ -70,7 +95,7 @@ class KatsProphet(SingleIdx):
         :param training_df:
         :return:
         """
-        training_df = training_df.reset_index()  # migrate index to column to be sued by fit
+        training_df = training_df.reset_index()  # migrate index to column to be used by fit
         training_df = training_df.rename(columns={list(training_df)[0]: 'time'})  # x column must be named time
         super().get_forecast(start, end, training_df)
 

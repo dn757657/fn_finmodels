@@ -366,6 +366,18 @@ class FinModel:
                 ylbl = asset.aliased_ylbls[source.name]
                 ax.plot_date(sample.index, sample[ylbl], '-', label=source.name)
 
+            if asset.inflows:
+                for flow in asset.inflows:
+                    # sample = source.sample(start=start, end=end)
+                    ylbl = asset.aliased_ylbls[flow.name]
+                    ax.plot_date(sample.index, sample[ylbl], '-', label=flow.name)
+
+            if asset.outflows:
+                for outflow in asset.outflows:
+                    # sample = source.sample(start=start, end=end)
+                    ylbl = asset.aliased_ylbls[outflow.name]
+                    ax.plot_date(sample.index, sample[ylbl], '-', label=outflow.name)
+
             # if sub:  # graph sources within asset as well (sub-assets)
             #     if len(asset.sources) > 1:
             #         for source in asset.sources:

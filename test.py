@@ -300,46 +300,86 @@ def new_main():
     # TODO ASSETS vs CASHFLOWS - new paradigm??
     # TODO normalize samples? do we need this really?
     from sources import YahooMarket, Bpl_Txns
-    from forecast import KatsProphet
+    from forecast import KatsProphet, Static
 
     get_categorized()
 
     # DEFINE DATES TO SAMPLE
-    start = datetime.datetime.strptime('2021-06-12', '%Y-%m-%d')
+    start = datetime.datetime.strptime('2020-04-30', '%Y-%m-%d')
     end = datetime.datetime.strptime('2022-12-31', '%Y-%m-%d')
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     fcst = datetime.datetime.strptime('2023-07-08', '%Y-%m-%d')
 
     # DATE SAMPLES
-    sample_at1 = pd.date_range(start=start, end=end, freq='MS').tolist()
+    sample_at1 = pd.date_range(start=start, end=end, freq='1D')
 
     # FORECASTING
     # market_kats_forecast = KatsProphet('market_kats')
-    kats_forecast = KatsProphet('standard_kats')
+    kats_fcst = KatsProphet('standard_kats')
+    static_fcst = Static('static')
 
     # DEFINE SOURCES
+    # BANKING
     categories = get_categorized()
     refined_categories = ['food', 'fuel']
     remaining_categories = [x for x in categories if x not in refined_categories]
 
-    food_spending_src = Bpl_Txns(name='food_spend', ccy_native='CAD', categories='food', forecast=kats_forecast,
-                                 cumulative=True)
+    food_spending_src = Bpl_Txns(name='food_spend',
+                                 ccy_native='CAD',
+                                 interp='zero',
+                                 table=Txn,
+                                 index='txn_date',
+                                 joins=[Category],
+                                 filters=[Category.cat_desc == 'food'],
+                                 forecast=kats_fcst,
+                                 cumulative=False, inverted=False, sum_indices=True)
 
-    fuel_spending_src = Bpl_Txns(name='fuel_spend', ccy_native='CAD', categories='fuel', forecast=kats_forecast,
-                                 cumulative=True)
+    fuel_spending_src = Bpl_Txns(name='fuel_spend',
+                                 ccy_native='CAD',
+                                 interp='zero',
+                                 table=Txn,
+                                 index='txn_date',
+                                 joins=[Category],
+                                 filters=[Category.cat_desc == 'fuel'],
+                                 forecast=None,
+                                 cumulative=False, inverted=False, sum_indices=True)
 
-    banking_remainder = Bpl_Txns(name='banking_misc', ccy_native='CAD', categories=remaining_categories,
-                                 forecast=kats_forecast, cumlative=True)
+    misc_spending_src = Bpl_Txns(name='misc_spend',
+                                 ccy_native='CAD',
+                                 interp='zero',
+                                 table=Txn,
+                                 index='txn_date',
+                                 joins=[Category],
+                                 filters=[Category.cat_desc != 'food',
+                                          Category.cat_desc != 'fuel'],
+                                 forecast=kats_fcst,
+                                 cumulative=False, inverted=False, sum_indices=True)
+
+    all_acc_adj = Bpl_Txns(name='all_acc_adj',
+                           ccy_native='CAD',
+                           table=Account,
+                           index='acc_adj_date',
+                           ylbl='acc_adj',
+                           cumulative=False, inverted=False, sum_indices=True)
 
     # CREATE ASSETS FROM SOURCES
-    banking_all = FAsset('banking_all', 'to_previous', [food_spending_src, fuel_spending_src])
+    banking_all = FAsset(name='banking_all', interp_type='zero',
+                         sources=[misc_spending_src, all_acc_adj, food_spending_src, fuel_spending_src],
+                         cumulative=True)
+    test_sa = banking_all.sample(sample_at1)
 
+    plot_list = list()
+    plot_list.append(banking_all.ylbl)
+    plot_list.extend(unpack_lbls(banking_all.aliased_ylbls, False, False, True))
+    plot_df(start, end, '1W', test_sa, plot_list)
+    print()
     # MODEL
-    model_1 = FinModel(name='model_1')
-    model_1.add_assets(banking_all)
-    model_1.plot_model(start=start,
-                       end=end,
-                       freq='1W')
+    # model_1 = FinModel(name='model_1')
+    # model_1.add_assets(banking_all)
+    # model_1.plot_model(start=start,
+    #                    end=end,
+    #                    freq='1W')
+
 
 def get_categorized():
     # TODO move to banking pipeline?? - needs overhaul
@@ -351,6 +391,53 @@ def get_categorized():
     categories = categories['cat_desc'].tolist()
 
     return categories
+
+def unpack_lbls(lbls, base=False, fcst=False, final=False):
+    unpacked_lbls = list()
+
+    for lbl in lbls:
+        lbl = lbls[lbl]
+        if base:
+            unpacked_lbls.append(lbl['base'])
+        if fcst:
+            unpacked_lbls.append(lbl['fcst'])
+        if final:
+            unpacked_lbls.append(lbl['final'])
+
+    return unpacked_lbls
+
+def plot_df(start, end, freq, dfs, cols):
+    """ plot assets using matplotlib at requested sample points """
+
+    if not isinstance(dfs, list):
+        dfs = [dfs]
+    if not isinstance(cols, list):
+        cols = [cols]
+
+    # TODO update this func
+
+    # if not assets:
+    #     assets = self.assets.keys()
+
+    # eval_at = wrapped_date_range(pd.date_range(start=start,
+    #                                            end=end,
+    #                                            freq=freq),
+    #                              freq=freq)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1)
+
+    for df in dfs:
+        for col in cols:
+            if col in df.columns:
+                ax.plot_date(df.index, df[col], '*', label=col)  # add asset output
+
+
+    plt.legend()
+    plt.grid()
+    plt.show()
+
+    return
 
 if __name__ == '__main__':
     new_main()

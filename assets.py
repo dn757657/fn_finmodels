@@ -67,7 +67,7 @@ Component:
 
 
 class FAsset:
-    def __init__(self, name, interp_type, sources):
+    def __init__(self, name, interp_type, sources, inflows=None, outflows=None, **kwargs):
         """
         Attrs:
             data            df sampled from sources, if multiple sources
@@ -75,22 +75,32 @@ class FAsset:
             interp_type     how y columns in data is interpolated
             forecast        object with get_forcast capability?
 
+        Notes:
+            the concept of flow is contained solely within the asset, outside of the asset a source is a source
+            but inside the asset a source can become a flow
         """
 
         if not isinstance(sources, list):
             sources = [sources]
+        if not isinstance(inflows, list) and inflows:
+            inflows = [inflows]
+        if not isinstance(outflows, list) and outflows:
+            outflows = [outflows]
 
         # set attributes
         self.name = name
         self.sources = sources
+        self.inflows = inflows
+        self.outflows = outflows
 
         # generated/output
         self.data = pd.DataFrame()
 
         # internal
         self.ylbl = self.name+'_y'
+        # self.final_source_date = None  # indicates final source data date
 
-        interp_types = ['to_previous', 'linear']
+        interp_types = ['to_previous', 'linear', 'zero']
         if interp_type in interp_types:
             self.interp_type = interp_type
         else:
@@ -98,11 +108,20 @@ class FAsset:
 
         # alias source y labels to prevent duplicates
         self.aliased_ylbls = self.alias_ylbls(self.sources)
+        # add aliased flow labels
+        self.aliased_ylbls.update(self.alias_ylbls(self.inflows))
+        self.aliased_ylbls.update(self.alias_ylbls(self.outflows))
+        self.__dict__.update(kwargs)
 
     def alias_ylbls(self, objects):
         aliased = dict()
-        for obj in objects:
-            aliased[obj.name] = obj.ylbl + "_" + obj.name
+
+        if objects:
+            for obj in objects:
+                aliased[obj.name] = dict()
+                aliased[obj.name]['final'] = obj.name + "_" + obj.ylbl
+                aliased[obj.name]['base'] = obj.name + "_" + obj.ylbl_base
+                aliased[obj.name]['fcst'] = obj.name + "_" + obj.ylbl_fcst
 
         return aliased
 
@@ -110,17 +129,83 @@ class FAsset:
         """ sample component and return self.data after setting sample as self.data as dataframe
             access component data via self.ylbl
             always datetime index
+
             """
-        # if sampling more than one set of components will need some sort of merge function for samples
-        self.data = self.sample_components(sample_at=sample_at,
-                                           components=self.sources,
-                                           aliased_component_ylbls=self.aliased_ylbls)
+        # sample all components
+        # sample sources
+        self.sample_sources(sample_at=sample_at)
+        # merge source sample
+        # self.data = pd.merge(self.data, sources_sample, left_index=True, right_index=True, how='outer')
+        # # sample inflows
+        # inflows_sample = self.sample_inflows(sample_at=sample_at)
+        # # merge inflows sample
+        # self.data = pd.merge(self.data, inflows_sample, left_index=True, right_index=True, how='outer')
+        # # sample outflows
+        # outflows_sample = self.sample_outflows(sample_at=sample_at)
+        # # merge outflows sample
+        # self.data = pd.merge(self.data, outflows_sample, left_index=True, right_index=True, how='outer')
 
         # all samples must be merged to self.data prior to calling interpolate and sum samples
-        self.interpolate(sample_at=sample_at)
+        # self.interpolate(sample_at=sample_at)
+        self.assemble(sample_at=sample_at)
 
-        self.sum_samples()
+        # from df_utils import incluloc
+        # self.data = incluloc(self.data, sample_at.min(), sample_at.max())
+
+        # pull requested samples from data
+        self.data = self.data[self.data.index.isin(sample_at)]
+        self._apply_options()
+        # self.sum_samples()
         return self.data
+
+    def sample_sources(self, sample_at):
+        """ sample asset sources and return all samples as df """
+        sources_sample = self.sample_components(sample_at=sample_at,
+                                                components=self.sources,)
+
+        return sources_sample
+
+    def sample_inflows(self, sample_at):
+        """ sample asset inflows and return all samples as df """
+        inflows_sample = pd.DataFrame()
+
+        if self.inflows:
+            simulated_present_date = self.data.index.max()  # final date where asset source info is available
+
+            # future is defined as beyond the final index of the asset source sample
+            if sample_at.max() > simulated_present_date:
+                inflows_sample = self.sample_components(sample_at=sample_at[:simulated_present_date],
+                                                        components=self.inflows,
+                                                        aliased_component_ylbls=self.aliased_ylbls)
+
+            # slice out any 'past' data
+            # inflows_sample = inflows_sample.loc[simulated_present_date:]
+
+        return inflows_sample
+
+    def sample_outflows(self, sample_at):
+        """ sample asset outflows and return all samples as df """
+        outflows_sample = pd.DataFrame()
+
+        if self.outflows:
+            simulated_present_date = self.data.index.max()  # final date where asset source info is available
+
+            # future is defined as beyond the final index of the asset source sample
+            if sample_at.max() > simulated_present_date:
+                # future_sample_at_slice_indexes = sample_at.slice_indexer(start=simulated_present_date)
+                # future_sample_at = sample_at[future_sample_at_slice_indexes.start:]
+                # future_sample_at.append(pd.DatetimeIndex([simulated_present_date]))
+
+                outflows_sample = self.sample_components(sample_at=sample_at,
+                                                         components=self.outflows,
+                                                         aliased_component_ylbls=self.aliased_ylbls)
+
+                # invert data as it is flowing out (negative)
+                for outflow in self.outflows:
+                    outflow_ylbl_alias = self.aliased_ylbls[outflow.name]['final']
+                    outflows_sample[outflow_ylbl_alias] = outflows_sample[outflow_ylbl_alias] * -1
+
+        return outflows_sample
 
     # def sample_all(self, sample_at):
     #     combined_sources_sample = self.sample_sources(sample_at=sample_at)
@@ -190,10 +275,10 @@ class FAsset:
     #
     #     return sources_sample
 
-    def sample_components(self, sample_at, components, aliased_component_ylbls):
+    def sample_components(self, sample_at, components):
         """ sample all sub components within the component """
 
-        combined_comp_samples = pd.DataFrame()
+        # combined_comp_samples = pd.DataFrame()
         sample_at = pd.Series(sample_at)
 
         # sample sources and rename ylbl to asset ylbl (instead of source ylbl)
@@ -201,12 +286,12 @@ class FAsset:
         sample_start = sample_at.min()
         sample_end = sample_at.max()
         for comp in components:
-            # sample the source
-            sample = comp.sample(start=sample_start, end=sample_end)
+            # sample the source - sample func returns sample but it is also stored in source.data
+            comp.sample(start=sample_start, end=sample_end)
             # dropping duplicate index at the beginning is important
             # this ensures the most recent datapoint is kept given duplicate index
             # given the data is in the correct order when initiated
-            sample = sample[~sample.index.duplicated(keep='last')]
+            # sample = sample[~sample.index.duplicated(keep='last')]
 
             # # apply asset modifiers to source sample
             # if self.cumulative:
@@ -225,27 +310,120 @@ class FAsset:
             #     return
 
             # add sample to sources_sample
-            if not combined_comp_samples.empty:
-                # combine the component sample into the combined df
-                combined_comp_samples = pd.merge(combined_comp_samples, sample, left_index=True, right_index=True, how='outer')
+            # if not combined_comp_samples.empty:
+            #     # combine the component sample into the combined df
+            #     combined_comp_samples = pd.merge(combined_comp_samples, sample, left_index=True, right_index=True, how='outer')
+            # else:
+            #     combined_comp_samples = sample
+            #
+            # # rename source y as aliased
+            # combined_comp_samples = combined_comp_samples.rename(columns={comp.ylbl: aliased_component_ylbls[comp.name]['final'],
+            #                                                               comp.ylbl_base: aliased_component_ylbls[comp.name]['base'],
+            #                                                               comp.ylbl_fcst: aliased_component_ylbls[comp.name]['fcst']})
+
+        return
+
+    def assemble(self, sample_at):
+        """ assemble source samples into asset data and add to asset ylbl """
+
+        for source in self.sources:
+            # assemble source columns to asset data
+            col_aliases = self.aliased_ylbls[source.name]
+            # source_ylbls = [source.ylbl, source.ylbl_base, source.ylbl_fcst]
+            # self.data[col_aliases['base']] = source.data[source.ylbl_base]
+            # self.data[col_aliases['final']] = source.data[source.ylbl]
+            # if source.ylbl_fcst in source.data:
+            #     self.data[col_aliases['fcst']] = source.data[source.ylbl_fcst]
+
+            self.data = self.data = pd.merge(self.data,
+                                             source.data[source.ylbl_base],
+                                             left_index=True, right_index=True, how='outer')
+            self.data = self.data.rename(columns={source.ylbl_base: col_aliases['base']})
+            self.data = self.data = pd.merge(self.data,
+                                             source.data[source.ylbl],
+                                             left_index=True, right_index=True, how='outer')
+            self.data = self.data.rename(columns={source.ylbl: col_aliases['final']})
+            if source.ylbl_fcst in source.data:
+                self.data = self.data = pd.merge(self.data,
+                                                 source.data[source.ylbl_fcst],
+                                                 left_index=True, right_index=True, how='outer')
+                self.data = self.data.rename(columns={source.ylbl_fcst: col_aliases['fcst']})
+
+        # TODO coudl be func
+        # assemble sample_at into index
+        # create df from sample
+        new_idx_df = pd.DataFrame(sample_at)
+        # remove dates from requested sample that are already in sample data
+        parsed_sample_at_df = new_idx_df[~new_idx_df[0].isin(self.data.index)]
+        # remove requested samples not within the scope of existing index (cannot use interpolation as forecast)
+        parsed_sample_at_df = parsed_sample_at_df.loc[parsed_sample_at_df[0] > self.data.index.min()]
+        parsed_sample_at_df = parsed_sample_at_df.loc[parsed_sample_at_df[0] < self.data.index.max()]
+        parsed_sample_at_df.set_index(0, drop=True, inplace=True)
+
+        self.data = pd.merge(self.data, parsed_sample_at_df, 'outer', left_index=True, right_index=True)
+        self.data = self.data.sort_index()
+
+        # need to asseble all samples first for full consistent index
+        for source in self.sources:
+            # interp source data to match index of asset ylbl
+            source.interpolate(self.data.index)
+            if self.ylbl in self.data.columns:
+                # source.interpolate(self.data.index)
+                # create temp columns to add into asset ylbl
+                ylbl = source.ylbl
+                self.data['final_temp'] = source.data[source.ylbl]
+                self.data['final_temp'].fillna(0, inplace=True)
+                self.data[self.ylbl].fillna(0, inplace=True)  # ideally we would also interpolate main ylbl? not fll na
+                self.data[self.ylbl] = self.data[self.ylbl] + self.data['final_temp']
             else:
-                combined_comp_samples = sample
+                self.data[self.ylbl] = self.data[self.aliased_ylbls[source.name]['final']]
 
-            # rename source y as aliased
-            combined_comp_samples = combined_comp_samples.rename(columns={comp.ylbl: aliased_component_ylbls[comp.name]})
-
-        return combined_comp_samples
+        # slice out data ? no happends in sampe
+        return
 
     def sum_samples(self):
         """ sum all component samples and flow samples into asset_ylbl (self) """
+        final_source_date = None
+        # first sum sources to create source base data
+        for source in self.sources:
 
-        for comp in self.sources:
-            # add samples to asset_ylbl
-            if self.ylbl in self.data.columns:
-                self.data.fillna(0, inplace=True)
-                self.data[self.ylbl] = self.data[self.ylbl] + self.data[self.aliased_ylbls[comp.name]]
+            # get base point to determine future date cutoff
+            temp = self.data[self.aliased_ylbls[source.name]['base']]
+            temp = temp[temp.notna()]
+            temp = temp.index.max()
+            if final_source_date:
+                if temp > final_source_date:
+                    final_source_date = temp
             else:
-                self.data[self.ylbl] = self.data[self.aliased_ylbls[comp.name]]
+                final_source_date = temp
+
+            # add samples to asset_ylbl
+            # TODO use temp col same as below as not to disturb original data
+            # TODO maybe this can be its own function
+            if self.ylbl in self.data.columns:
+                self.data['temp'] = self.data[self.aliased_ylbls[source.name]['final']]
+                self.data['temp'].fillna(0, inplace=True)
+
+                self.data[self.ylbl] = self.data[self.ylbl] + self.data['temp']
+            else:
+                self.data[self.ylbl] = self.data[self.aliased_ylbls[source.name]['final']]
+
+        # # sum flows if present
+        # if self.inflows or self.outflows:
+        #     flows = list()
+        #     if self.inflows:
+        #         flows.extend(self.inflows)
+        #     if self.outflows:
+        #         flows.extend(self.outflows)
+        #
+        #     for flow in flows:
+        #         self.data['temp'] = self.data[self.aliased_ylbls[flow.name]['final']].loc[final_source_date:]
+        #         # final source date slice includes final source date, so to prevent original knwon data from
+        #         # being overwritten by forecast it is dropped from temp
+        #         self.data.loc[final_source_date, 'temp'] = 0
+        #         # TODO do not fill all na, jus selectively or else things get messy and misleading when plotted!
+        #         self.data['temp'].fillna(0, inplace=True)
+        #         self.data[self.ylbl] = self.data[self.ylbl] + self.data['temp']
 
         return
 
@@ -262,13 +440,18 @@ class FAsset:
 
         sample = self.data
         for source in self.sources:
-            ylbl = self.aliased_ylbls[source.name]
+            ylbl = self.aliased_ylbls[source.name]['final']
             # interpolate the sources after all dates have been added or else odd behaviour/rogue zeroes
             # add requested dates to data_df if they are not there already
             # create df from parsed samples to add to data_df
             sample_at_df = pd.DataFrame(sample_at)
             # remove dates from requested sample that are already in sample data
             parsed_sample_at_df = sample_at_df[~sample_at_df[0].isin(sample.index)]
+            # parsed_sample_at_df = sample_at_df
+
+            # remove requested samples not within the scope of existing index (cannot use interpolation as forecast)
+            parsed_sample_at_df = parsed_sample_at_df.loc[parsed_sample_at_df[0] > self.data.index.min()]
+            parsed_sample_at_df = parsed_sample_at_df.loc[parsed_sample_at_df[0] < self.data.index.max()]
             parsed_sample_at_df.set_index(0, drop=True, inplace=True)
 
             sample = pd.merge(sample, parsed_sample_at_df, 'outer', left_index=True, right_index=True)
@@ -279,6 +462,8 @@ class FAsset:
                 sample = self.interp_2_prev(sample, ylbl)
             elif self.interp_type == 'linear':
                 sample = self.interp_linear(sample, ylbl)
+            elif self.interp_type == 'zero':
+                sample = self.inter_zero(sample, ylbl)
 
         self.data = sample
 
@@ -288,6 +473,12 @@ class FAsset:
         """ set all nan in self.y to precceeding value """
 
         df[ylbl] = df[ylbl].fillna(method='ffill')
+
+        return df
+
+    def inter_zero(self, df, ylbl):
+        """ all interpolations are always zero """
+        df[ylbl].fillna(value=0, inplace=True)
 
         return df
 
@@ -308,6 +499,50 @@ class FAsset:
 
         return df
 
+    def _apply_options(self):
+        """ apply options to sample
+        :param data             dataframe to apply option to
+        :param col              col within dataframe where option is applied
+        """
+        # if not col:
+        #     col = self.ylbl  # default col is the ylbl col for source
+
+        if hasattr(self, 'cumulative'):
+            if self.cumulative:
+                self.data = self._to_cumulative()
+
+        # self.data = data
+        return
+
+    def _to_cumulative(self):
+        """ convert y to cumulative sum column """
+        data = self.data
+        lbls = [self.ylbl]
+        lbls.extend(self.unpack_lbls(True, True, True))
+
+        for lbl in lbls:
+            if lbl in self.data:
+                if is_numeric_dtype(self.data[lbl]):
+                    data.loc[:, lbl].fillna(0, inplace=True)  # zeroes for continuity
+                    data.loc[:, lbl] = pd.DataFrame.cumsum(data.loc[:, lbl])
+                else:
+                    logging.error("cannot sum non-numeric dtype")
+
+        return data
+
+    def unpack_lbls(self, base=False, fcst=False, final=False):
+        unpacked_lbls = list()
+
+        for alias_group in self.aliased_ylbls:
+            aliases = self.aliased_ylbls[alias_group]
+            if base:
+                unpacked_lbls.append(aliases['base'])
+            if fcst:
+                unpacked_lbls.append(aliases['fcst'])
+            if final:
+                unpacked_lbls.append(aliases['final'])
+
+        return unpacked_lbls
 
 # class FAsset(FComponent):
 #     def __init__(self, name, interp_type, components):
