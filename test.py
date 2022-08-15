@@ -1,4 +1,4 @@
-from assets import DFAsset, PeriodicAsset, EvalAsset, FAsset
+from assets import FAsset
 from model import FinModel
 from utils import sqlalch_2_df
 from df_utils import wrapped_date_range
@@ -414,7 +414,7 @@ def plot_df(start, end, freq, dfs, cols):
     if not isinstance(cols, list):
         cols = [cols]
 
-    # TODO update this func
+    # TODO add slicing capability such that data can be sampled and plotted in different windows
 
     # if not assets:
     #     assets = self.assets.keys()
