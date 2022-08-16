@@ -6,6 +6,7 @@ import numpy as np
 from forex_python.converter import CurrencyRates
 from dn_bpl import Txn, Category, Account, BplModel
 from sqlalchemy.orm import Session
+from sqlalchemy import Table
 import sqlalchemy as sa
 from utils import sqlalch_2_df
 import pandas as pd
@@ -15,17 +16,18 @@ from pandas.api.types import is_numeric_dtype, is_datetime64_any_dtype
 #internal
 from df_utils import incluloc
 from df_utils import wrapped_date_range
+from forecast import SingleIdx
 
 
 class FSource:
-    """ all sources inherit FSource """
+    """ data sources/pipelines """
 
     def __init__(
             self,
             name: str,
             ylbl: str,
             interp: str = None,
-            forecast: object = None,
+            forecast: SingleIdx = None,
             **kwargs
     ):
         """
@@ -91,7 +93,7 @@ class FSource:
             col: str
     ):
         """
-        sum col in data
+        sum col in data - always sums all base data entries allowing for data consistency
         :param data:    dataframe
         :param col:     lbl within dataframe to sum
         :return:        modified dataframe
@@ -262,99 +264,57 @@ def convert_ccy(data, col, ccy_native, ccy_out):
     return data
 
 
-class Bpl_Txns(FSource):
-    def __init__(self,
-                 name,
-                 ccy_native,
-                 table,
-                 index,
-                 ylbl='txn_amount',
-                 interp=None,
-                 forecast=None,
-                 filters: list = None,
-                 joins: list = None,
-                 ccy_out=None,
-                 **kwargs):
+class DbSource(FSource):
+    def __init__(
+            self,
+            name: str,
+            table: Table,
+            session: Session,
+            index: str,
+            ylbl: str = 'txn_amount',
+            interp: str = None,
+            forecast: SingleIdx = None,
+            filters: list = None,
+            joins: list = None,
+            **kwargs):
         """
-        :param name:
-        :param ccy_native:
-        :param ccy_out:
-        :param filters:             list of dicts continaing table: table to join and filter: filter to use
-        :param acc                  must be str
-        :param index                sql table column name to use as iundex
+
+        :param name:            source name for ref
+        :param table:           sqlalch table source
+        :param index:           sql table column label to use as data index
+        :param ylbl:            sql table column label to use as data
+        :param interp:          interpolation method
+        :param forecast:        forecast object
+        :param filters:         sqlalch style query filters
+        :param joins:           sqlalch table objects to join to query
         """
+
         super().__init__(name=name, ylbl=ylbl, interp=interp, forecast=forecast, **kwargs)
-        self.ccy_native = ccy_native
-        self.ccy_out = ccy_out
-        # self.ylbl = 'txn_amount'
 
-        # db params
-        # if not isinstance(categories, list) and categories:
-        #     categories = [categories]
-        # if not isinstance(accounts, list) and accounts:
-        #     accounts = [accounts]
-
+        self.session = session
         self.table = table
         self.index = index
         self.filters = filters
         self.joins = joins
 
-    """ source data from bpl txns table sqlite db"""
-
-    def get_base(self):
+    def sample_base(self):
         """ categories and accounts are always filtered as OR condition """
 
-        db = BplModel()
-        session = Session(db.engine)
+        obs = (self.session.query(self.table))
 
-        filters = list()
-        ta_joins = list()
-
-        # if self.category:
-        #     ta_joins.append(Category)
-        #     filters.append(sa.or_(Category.id == self.category, Category.cat_desc == self.category))
-
-        # for group in self.filters:
-        #     table = group['table']
-        #     filts = group['filters']
-        #
-        #     ta_joins.append(table)
-        #     for f in filts:
-        #         filters.append(f)
         if self.joins:
-            for j in self.joins:
-                ta_joins.append(j)
-
+            obs = obs.join(*self.joins)
         if self.filters:
-            for f in self.filters:
-                filters.append(f)
+            obs = obs.filter(*self.filters)
 
-        # if self.categories:
-        #     ta_joins.append(Category)
-        #     for cat in self.categories:
-        #         filters.append(sa.or_(Category.id == cat, Category.cat_desc == cat))
-        #
-        # if self.accounts:
-        #     ta_joins.append(Account)
-        #     for acc in self.accounts:
-        #         filters.append(sa.or_(Account.id == acc, Account.acc_num == acc, Account.acc_desc == acc))
+        df = sqlalch_2_df(obs)  # create df from sqlalh objects
 
-        o_txns = (session.query(self.table))
+        df.set_index(self.index, inplace=True)  # index must be desired x column
+        df.sort_index(inplace=True)  # sort data
 
-        if ta_joins:
-            o_txns = o_txns.join(*ta_joins)
-            # o_txns = o_txns.filter(sa.or_(*filters))
-            o_txns = o_txns.filter(*filters)
-
-        df_txns = sqlalch_2_df(o_txns)
-
-        base_sample = df_txns
-        base_sample.set_index(self.index, inplace=True)  # index must be desired x column
-
-        base_sample.sort_index(inplace=True)  # sort data
-
-        # super().sample(start, end)
-        return base_sample
+        self.data = df
+        super().sample_base()
+        return
 
 
 # ------------------------------------------GENERATED SOURCES------------------------------------------------
