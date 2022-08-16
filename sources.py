@@ -5,7 +5,7 @@ import copy
 import numpy as np
 from forex_python.converter import CurrencyRates
 from dn_bpl import Txn, Category, Account, BplModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, DeclarativeMeta
 from sqlalchemy import Table
 import sqlalchemy as sa
 from utils import sqlalch_2_df
@@ -47,8 +47,7 @@ class FSource:
         self.interp = interp  # set interp type
         self.forecast = forecast  # forecast object for predicting future source values
 
-        # optional params and source modifiers
-        self.__dict__.update(kwargs)
+        self.__dict__.update(kwargs)  # optional params and source modifiers
 
         self.fcst_df = pd.DataFrame()  # forecast data
 
@@ -109,7 +108,7 @@ class FSource:
             min_index = value_indexes.min()
 
             # get cumulative adjustment from base
-            adjust = data.loc[min_index, 'base_temp'] - data.loc[min_index, self.lbls['base']]
+            adjust = data.loc[min_index, 'base_temp'] - data.loc[min_index, self.lbls['final']]
 
             data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
             data.loc[:, col] = data.loc[:, col] + adjust
@@ -268,7 +267,7 @@ class DbSource(FSource):
     def __init__(
             self,
             name: str,
-            table: Table,
+            table,
             session: Session,
             index: str,
             ylbl: str = 'txn_amount',

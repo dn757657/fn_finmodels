@@ -297,14 +297,14 @@ def forecast_test():
     print()
 
 def new_main():
-    from sources import YahooMarket, Bpl_Txns
+    from sources import YahooMarket, DbSource
     from forecast import KatsProphet, Static
 
     get_categorized()
 
     # DEFINE DATES TO SAMPLE
-    start = datetime.datetime.strptime('2021-06-01', '%Y-%m-%d')
-    end = datetime.datetime.strptime('2023-01-01', '%Y-%m-%d')
+    start = datetime.datetime.strptime('2022-04-01', '%Y-%m-%d')
+    end = datetime.datetime.strptime('2022-07-01', '%Y-%m-%d')
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     fcst = datetime.datetime.strptime('2023-07-08', '%Y-%m-%d')
 
@@ -318,48 +318,60 @@ def new_main():
 
     # DEFINE SOURCES
     # BANKING
+    db = BplModel()
+    session = Session(db.engine)
     categories = get_categorized()
     refined_categories = ['food', 'fuel']
     remaining_categories = [x for x in categories if x not in refined_categories]
 
-    food_spending_src = Bpl_Txns(name='food_spend',
+    food_spending_src = DbSource(name='food_spend',
                                  ccy_native='CAD',
                                  interp='to_previous',
+                                 session=session,
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc == 'food'],
                                  forecast=kats_fcst,
-                                 cumulative=True)
+                                 cumulative=True,
+                                 duplicate_indices='sum')
 
-    fuel_spending_src = Bpl_Txns(name='fuel_spend',
+    # test_sa = food_spending_src.sample(start, end)
+
+    fuel_spending_src = DbSource(name='fuel_spend',
                                  ccy_native='CAD',
                                  interp='to_previous',
+                                 session=session,
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc == 'fuel'],
                                  forecast=None,
-                                 cumulative=True)
+                                 cumulative=True,
+                                 duplicate_indices='sum')
 
-    misc_spending_src = Bpl_Txns(name='misc_spend',
+    misc_spending_src = DbSource(name='misc_spend',
                                  ccy_native='CAD',
                                  interp='to_previous',
+                                 session=session,
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc != 'food',
                                           Category.cat_desc != 'fuel'],
                                  forecast=kats_fcst,
-                                 cumulative=True)
+                                 cumulative=True,
+                                 duplicate_indices='sum')
 
-    all_acc_adj = Bpl_Txns(name='all_acc_adj',
+    all_acc_adj = DbSource(name='all_acc_adj',
                            ccy_native='CAD',
                            interp='to_previous',
+                           session=session,
                            table=Account,
                            index='acc_adj_date',
                            ylbl='acc_adj',
-                           cumulative=True)
+                           cumulative=True,
+                           duplicate_indices='sum')
 
     # CREATE ASSETS FROM SOURCES
     banking_all = FAsset(name='banking_all', interp_type='zero',
@@ -369,7 +381,7 @@ def new_main():
 
     plot_list = list()
     plot_list.append(banking_all.ylbl)
-    plot_list.extend(unpack_lbls(banking_all.aliased_ylbls, False, False, True))
+    plot_list.extend(unpack_lbls(banking_all.aliased_lbls, False, False, True))
     plot_df(start, end, '1W', test_sa, plot_list)
     print()
     # MODEL
