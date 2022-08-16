@@ -297,16 +297,14 @@ def forecast_test():
     print()
 
 def new_main():
-    # TODO ASSETS vs CASHFLOWS - new paradigm??
-    # TODO normalize samples? do we need this really?
     from sources import YahooMarket, Bpl_Txns
     from forecast import KatsProphet, Static
 
     get_categorized()
 
     # DEFINE DATES TO SAMPLE
-    start = datetime.datetime.strptime('2020-04-30', '%Y-%m-%d')
-    end = datetime.datetime.strptime('2022-12-31', '%Y-%m-%d')
+    start = datetime.datetime.strptime('2021-06-01', '%Y-%m-%d')
+    end = datetime.datetime.strptime('2023-01-01', '%Y-%m-%d')
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     fcst = datetime.datetime.strptime('2023-07-08', '%Y-%m-%d')
 
@@ -326,46 +324,47 @@ def new_main():
 
     food_spending_src = Bpl_Txns(name='food_spend',
                                  ccy_native='CAD',
-                                 interp='zero',
+                                 interp='to_previous',
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc == 'food'],
                                  forecast=kats_fcst,
-                                 cumulative=False, inverted=False, sum_indices=True)
+                                 cumulative=True)
 
     fuel_spending_src = Bpl_Txns(name='fuel_spend',
                                  ccy_native='CAD',
-                                 interp='zero',
+                                 interp='to_previous',
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc == 'fuel'],
                                  forecast=None,
-                                 cumulative=False, inverted=False, sum_indices=True)
+                                 cumulative=True)
 
     misc_spending_src = Bpl_Txns(name='misc_spend',
                                  ccy_native='CAD',
-                                 interp='zero',
+                                 interp='to_previous',
                                  table=Txn,
                                  index='txn_date',
                                  joins=[Category],
                                  filters=[Category.cat_desc != 'food',
                                           Category.cat_desc != 'fuel'],
                                  forecast=kats_fcst,
-                                 cumulative=False, inverted=False, sum_indices=True)
+                                 cumulative=True)
 
     all_acc_adj = Bpl_Txns(name='all_acc_adj',
                            ccy_native='CAD',
+                           interp='to_previous',
                            table=Account,
                            index='acc_adj_date',
                            ylbl='acc_adj',
-                           cumulative=False, inverted=False, sum_indices=True)
+                           cumulative=True)
 
     # CREATE ASSETS FROM SOURCES
     banking_all = FAsset(name='banking_all', interp_type='zero',
                          sources=[misc_spending_src, all_acc_adj, food_spending_src, fuel_spending_src],
-                         cumulative=True)
+                         cumulative=False)
     test_sa = banking_all.sample(sample_at1)
 
     plot_list = list()
@@ -430,8 +429,7 @@ def plot_df(start, end, freq, dfs, cols):
     for df in dfs:
         for col in cols:
             if col in df.columns:
-                ax.plot_date(df.index, df[col], '*', label=col)  # add asset output
-
+                ax.plot_date(df.index, df[col], '-', label=col)  # add asset output
 
     plt.legend()
     plt.grid()

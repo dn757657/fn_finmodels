@@ -43,34 +43,9 @@ class FSource:
         self.ccy_native = None
 
         # optional params and source modifiers
-        # self.cumulative = None
-        # self.inverted = None
-        # self.sum_indices = None
         self.__dict__.update(kwargs)
 
-        # self.parse_opts(**kwargs)
-
         pass
-
-    def parse_opts(self, **kwargs):
-        options = ['cumulative', 'inverted', 'sum_indices']
-        #
-        # for op in options
-        #     if op in kwargs:
-        #         if kwargs[op]:
-        #
-        #
-        # if 'cumulative' in kwargs:
-        #     if kwargs['cumulative']
-        #     self.cumulative = True
-        #
-        # if 'inverted' in kwargs:
-        #     self.inverted = True
-        #
-        # if 'sum_indices' in kwargs:
-        #     self.sum_indices = True
-
-        return
 
     def sample(self, start, end):
         """ start/end as datetime -> dataframe sample
@@ -83,22 +58,28 @@ class FSource:
         - always sliced by index, start, end
         """
         # get base data
-        base_sample = self.get_base(start=start, end=end)
-        # self.data.sort_index(inplace=True)  # sort data
+        base_sample = self.get_base()
+        # TODO could add an option dictating what to do with duplicate indices like sum, drop, etc
+        # cannot deal with duplicate indices, must be removed
+        base_sample = self._sum_duplicate_indices(base_sample, self.ylbl)
 
         # forecast individual source using source forecast model and add to self.data
-        fcst_df = self.get_forecast(start=start, end=end, training_df=base_sample[self.ylbl])
+        fcst_df = self.get_forecast(end=end, training_df=base_sample[self.ylbl])
         self.get_final(base=base_sample, fcst=fcst_df)
 
-        self._apply_options(self.data, self.ylbl)  # apply sample options
+        # temp = incluloc(self.data[self.ylbl], start, end)  # only return data within requested dates
+        # self.data.loc[~self.data.index.isin(temp.index), self.ylbl] = np.nan
 
-        self.data = incluloc(self.data, start, end)  # only return data within requested dates
 
         # ensure proper ccy
         if self.ccy_native and self.ccy_out:
             if self.ccy_out != self.ccy_native:
                 self.convert_ccy()
 
+        self._apply_options(self.data, self.ylbl)  # apply sample options
+
+        # TODO make slicing a source option in the future
+        # self.data[self.ylbl] = incluloc(self.data[self.ylbl], start, end)
         return self.data
 
     def get_final(self, base, fcst):
@@ -115,20 +96,17 @@ class FSource:
 
         return
 
-    def get_base(self, start, end):
+    def get_base(self):
         """ sample the source base data - each source has own methodology
         - base always returns dataframe with datetime index and ylbl data
         """
         base_sample = pd.DataFrame()
+
         base_sample.sort_index(inplace=True)  # sort data
 
         return base_sample
 
-    # def apply_forecast(self):
-    #     """ need to rename base data as base and merge forecast into main ylbl """
-    #
-
-    def get_forecast(self, start, end, training_df=pd.DataFrame()):
+    def get_forecast(self, end, training_df=pd.DataFrame()):
         """ :return data frame with forecasted y within start -> end window as freq=D
         (could resolve freq with code later)
         df has x and y cols along with integer index
@@ -142,7 +120,7 @@ class FSource:
         """
         if training_df.empty:
             if self.data.empty:
-                self.sample(start=start, end=end)
+                self.get_base()
 
             training_df = self.data
 
@@ -162,15 +140,6 @@ class FSource:
                 forecast_df = pd.DataFrame()
         else:
             forecast_df = pd.DataFrame
-
-        # # add forecast to self.data if exists
-        # if not forecast_df.empty:
-        #     self.data = pd.concat([forecast_df, self.data]).drop_duplicates(keep=False)
-        # else:
-        #     logging.error("Cannot sample future without forecast")
-        #     return
-        # # sort or indexing can get fucky
-        # self.data.sort_index(inplace=True)
 
         # since get_forecast returns the data in the same column name as the trianing data need to rename as ylbl_fcst
         if not forecast_df.empty:
@@ -194,7 +163,6 @@ class FSource:
 
         lbls = [self.ylbl, self.ylbl_base, self.ylbl_fcst]
 
-        # TODO could be func
         # create df from index
         new_idx_df = pd.DataFrame(new_index)
         # remove dates from requested sample that are already in sample data
@@ -209,30 +177,37 @@ class FSource:
         self.data = pd.merge(self.data, parsed_sample_at_df, 'outer', left_index=True, right_index=True)
         self.data = self.data.sort_index()
 
+        # only want to apply interpolation on relevant data so we get min and max of existing sample
+        # get all index where main ylbl is not nan
+        value_indexes = self.data.index[~self.data[self.ylbl].isna()]
+        min_index = value_indexes.min()
+        max_index = value_indexes.max()
+
         for ylbl in lbls:
             if ylbl in self.data:
                 # interpolate missing values from sample
                 if self.interp == 'to_previous':
-                    self.data = self.interp_2_prev(self.data, ylbl)
+                    self.data = self.interp_2_prev(self.data, ylbl, start=min_index, end=max_index)
                 elif self.interp == 'linear':
                     self.data = self.interp_linear(self.data, ylbl)
                 elif self.interp == 'zero':
-                    self.data = self.interp_zero(self.data, ylbl)
+                    self.data = self.interp_zero(self.data, ylbl, start=min_index, end=max_index)
                 # else:
                 #     self.data[ylbl] = np.nan
 
         return
 
-    def interp_2_prev(self, df, ylbl):
+    def interp_2_prev(self, df, ylbl, start, end):
         """ set all nan in self.y to precceeding value """
 
-        df[ylbl] = df[ylbl].fillna(method='ffill')
+        df.loc[start:end, ylbl] = df.loc[start:end, ylbl].fillna(method='ffill')
 
         return df
 
-    def interp_zero(self, df, ylbl):
+    def interp_zero(self, df, ylbl, start, end):
         """ all interpolations are always zero """
-        df[ylbl].fillna(value=0, inplace=True)
+
+        df.loc[start:end, ylbl].fillna(value=0, inplace=True)
 
         return df
 
@@ -263,9 +238,9 @@ class FSource:
             col = self.ylbl  # default col is the ylbl col for source
 
         # apply asset modifiers to source sample
-        if hasattr(self, 'sum_indices'):
-            if self.sum_indices:
-                data = self._sum_duplicate_indices(data, col)
+        # if hasattr(self, 'sum_indices'):
+        #     if self.sum_indices:
+        #         data = self._sum_duplicate_indices(data, col)
         if hasattr(self, 'cumulative'):
             if self.cumulative:
                 data = self._to_cumulative(data, col)
@@ -280,7 +255,20 @@ class FSource:
         """ convert y to cumulative sum column """
 
         if is_numeric_dtype(data[col]):
+            # need to add in cumulative data and adjust final return data
+            data['base_temp'] = data[self.ylbl_base]
+            data['base_temp'] = pd.DataFrame.cumsum(data['base_temp'])
+
+            # get all index where main ylbl is not nan
+            value_indexes = data.index[~data[self.ylbl].isna()]
+            min_index = value_indexes.min()
+
+            # get cumulative adjustment from base
+            adjust = data.loc[min_index, 'base_temp'] - data.loc[min_index, self.ylbl]
+
             data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
+            data.loc[:, col] = data.loc[:, col] + adjust
+
         else:
             logging.error("cannot sum non-numeric dtype")
 
@@ -327,8 +315,8 @@ class Bpl_Txns(FSource):
                  ylbl='txn_amount',
                  interp=None,
                  forecast=None,
-                 filters:list=None,
-                 joins:list=None,
+                 filters: list = None,
+                 joins: list = None,
                  ccy_out=None,
                  **kwargs):
         """
@@ -357,7 +345,7 @@ class Bpl_Txns(FSource):
 
     """ source data from bpl txns table sqlite db"""
 
-    def get_base(self, start, end):
+    def get_base(self):
         """ categories and accounts are always filtered as OR condition """
 
         db = BplModel()
@@ -406,6 +394,7 @@ class Bpl_Txns(FSource):
 
         base_sample = df_txns
         base_sample.set_index(self.index, inplace=True)  # index must be desired x column
+
         base_sample.sort_index(inplace=True)  # sort data
 
         # super().sample(start, end)
