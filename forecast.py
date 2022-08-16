@@ -29,7 +29,7 @@ class SingleIdx:
 
         self.train(training_df)
 
-        return
+        return self.forecast
 
     def train(self, training_df):
         """
@@ -77,7 +77,7 @@ class Static(SingleIdx):
         fcst_df.set_index('index', drop=True, inplace=True)
 
         self.forecast = fcst_df
-        return
+        return self.forecast
 
 
 class KatsProphet(SingleIdx):
@@ -111,6 +111,7 @@ class KatsProphet(SingleIdx):
         fcst_df = fcst_df.rename(columns={'fcst': training_df.columns[1]})
 
         self.forecast = fcst_df
+        return self.forecast
 
     def train(self, training_df):
         # training_df = training_df.reset_index()  # migrate index to column to be sued by fit
@@ -151,5 +152,4 @@ class AssetForecast(SingleIdx):
         fcst_df = fcst_df.loc[:end]
 
         self.forecast = fcst_df
-
-        return
+        return self.forecast

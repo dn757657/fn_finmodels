@@ -1,26 +1,20 @@
 import pandas as pd
-import logging
-from pandas.api.types import is_numeric_dtype
+from interpolation import interp_prev, interp_zero, interp_linear
 
 
 # TODO restructure aliases flatter and better access, maybe dict of original:aliased setup?
 class FAsset:
     """
-    rules:
-        asset does not modify source data
+    Collection of sources with added sampling utility
     """
 
     def __init__(self, name, interp_type, sources, **kwargs):
         """
-        Attrs:
-            data            df sampled from sources, if multiple sources
-            name            name of asset provided by user
-            interp_type     how y columns in data is interpolated
-            forecast        object with get_forcast capability?
 
-        Notes:
-            the concept of flow is contained solely within the asset, outside of the asset a source is a source
-            but inside the asset a source can become a flow
+        :param name:
+        :param interp_type:
+        :param sources:
+        :param kwargs:
         """
 
         if not isinstance(sources, list):
@@ -54,18 +48,14 @@ class FAsset:
         return aliased
 
     def sample(self, sample_at):
-        """ sample component and return self.data after setting sample as self.data as dataframe
-            access component data via self.ylbl
-            always datetime index
+        """
+        :param sample_at:   pandas compatible date-type series
+        :return: df containing source sample data and asset sample data at the specified dates in sample_at
+        """
 
-            """
-        # sample sources
-        self.sample_sources(sample_at=sample_at)
-
-        self.assemble(sample_at=sample_at)
-        # self._apply_options()
-        # return only requested dates
-        self.data = self.data[self.data.index.isin(sample_at)]
+        self.sample_sources(sample_at=sample_at)  # populate sources with data
+        self.assemble(sample_at=sample_at)  # populate asset with data per sources
+        self.data = self.data[self.data.index.isin(sample_at)]  # return requested sample dates
 
         return self.data
 
@@ -226,46 +216,13 @@ class FAsset:
         # if ylbl in self.data:
         # interpolate missing values from sample
         if method == 'to_previous':
-            self.data = self.interp_2_prev(self.data, ylbl, start=min_index, end=max_index)
+            self.data = interp_prev(self.data, ylbl)
         elif method == 'linear':
-            self.data = self.interp_linear(self.data, ylbl)
+            self.data = interp_linear(self.data, ylbl)
         elif method == 'zero':
-            self.data = self.interp_zero(self.data, ylbl, start=min_index, end=max_index)
-        # else:
-        #     self.data[ylbl] = np.nan
+            self.data = interp_zero(self.data, ylbl)
 
         return data
-
-    def interp_2_prev(self, df, ylbl, start, end):
-        """ set all nan in self.y to precceeding value """
-
-        df.loc[:, ylbl] = df.loc[:, ylbl].fillna(method='ffill')
-
-        return df
-
-    def interp_zero(self, df, ylbl, start, end):
-        """ all interpolations are always zero """
-
-        df.loc[start:end, ylbl].fillna(value=0, inplace=True)
-
-        return df
-
-    def interp_linear(self, df, ylbl, interp_index=None):
-        """ interpolate linearly and fill nan values in self.y_col
-         Args:
-             interp_index       str label of index to interp to
-         """
-        df_copy = df.copy()
-        if interp_index:  # if not interpolating using index (some other column), set as index
-            df_copy = df_copy.set_index(df[interp_index])
-
-        if is_numeric_dtype(df[interp_index]):
-            df[ylbl] = df_copy[ylbl].interpolate(method='linear').values
-        else:
-            df[ylbl] = df_copy[ylbl].interpolate(method='time').values
-            # df[self.y] = df_copy[self.y].values  # values required due to misaligned index
-
-        return df
 
     def unpack_lbls(self, base=False, fcst=False, final=False):
         unpacked_lbls = list()
