@@ -135,21 +135,22 @@ class KatsProphet(SingleIdx):
         super().train(training_df)
 
 
-class AssetForecast(SingleIdx):
+class Source(SingleIdx):
     """ use an asset as a forecast """
 
-    def __init__(self, name, asset):
+    def __init__(self, name, source):
         super().__init__(name=name)
 
-        self.asset = asset
+        self.source = source
 
     def get_forecast(self, start, end, training_df):
         super().get_forecast(start=start, end=end, training_df=training_df)
 
-        sample_at = wrapped_date_range(pd.date_range(start=start, end=end, freq='1D'), '1D')
+        fcst_df = self.source.sample(start, end)
+        fcst_df = fcst_df.loc[start:]
 
-        fcst_df = self.asset.sample(sample_at=sample_at)
-        fcst_df = fcst_df.loc[:end]
+        # rename col back to original name
+        fcst_df = fcst_df.rename(columns={self.source.lbls['final']: training_df.name})
 
         self.forecast = fcst_df
         return self.forecast

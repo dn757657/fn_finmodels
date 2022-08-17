@@ -297,14 +297,15 @@ def forecast_test():
     print()
 
 def new_main():
-    from sources import YahooMarket, DbSource
-    from forecast import KatsProphet, Static
+    from sources import YahooMarket, DbSource, Periodic
+    from forecast import KatsProphet, Static, Source
 
     get_categorized()
 
     # DEFINE DATES TO SAMPLE
-    start = datetime.datetime.strptime('2022-04-01', '%Y-%m-%d')
-    end = datetime.datetime.strptime('2022-07-01', '%Y-%m-%d')
+    start = datetime.datetime.strptime('2021-04-15', '%Y-%m-%d')
+    trans = datetime.datetime.strptime('2021-04-13', '%Y-%m-%d')
+    end = datetime.datetime.strptime('2022-10-02', '%Y-%m-%d')
     now = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     fcst = datetime.datetime.strptime('2023-07-08', '%Y-%m-%d')
 
@@ -324,6 +325,26 @@ def new_main():
     refined_categories = ['food', 'fuel']
     remaining_categories = [x for x in categories if x not in refined_categories]
 
+    food_budget_src = Periodic(name='food_budget',
+                               interp='linear',
+                               amount=-400,
+                               period_unit='M',
+                               period_size=1,
+                               cumulative=False)
+    sa1 = food_budget_src.sample(start, end)
+
+    food_spending_bud = DbSource(name='food_spend_bud',
+                                 ccy_native='CAD',
+                                 interp='to_previous',
+                                 session=session,
+                                 table=Txn,
+                                 index='txn_date',
+                                 joins=[Category],
+                                 filters=[Category.cat_desc == 'food'],
+                                 forecast=Source(name=food_budget_src.name, source=food_budget_src),
+                                 cumulative=True,
+                                 duplicate_indices='sum')
+
     food_spending_src = DbSource(name='food_spend',
                                  ccy_native='CAD',
                                  interp='to_previous',
@@ -335,8 +356,6 @@ def new_main():
                                  forecast=kats_fcst,
                                  cumulative=True,
                                  duplicate_indices='sum')
-
-    # test_sa = food_spending_src.sample(start, end)
 
     fuel_spending_src = DbSource(name='fuel_spend',
                                  ccy_native='CAD',
@@ -374,15 +393,18 @@ def new_main():
                            duplicate_indices='sum')
 
     # CREATE ASSETS FROM SOURCES
+    food_test = FAsset(name='food_test',
+                       interp_type='zero',
+                       sources=[food_spending_src, food_budget_src])
+
     banking_all = FAsset(name='banking_all', interp_type='zero',
-                         sources=[misc_spending_src, all_acc_adj, food_spending_src, fuel_spending_src],
+                         sources=[misc_spending_src, all_acc_adj, food_spending_bud, fuel_spending_src],
                          cumulative=False)
     test_sa = banking_all.sample(sample_at1)
 
     plot_list = list()
     plot_list.append(banking_all.ylbl)
-    plot_list.extend(unpack_lbls(banking_all.aliased_lbls, False, False, True))
-    plot_df(start, end, '1W', test_sa, plot_list)
+    plot_df(start, end, '1W', test_sa, banking_all.flatten_lbls())
     print()
     # MODEL
     # model_1 = FinModel(name='model_1')
@@ -441,7 +463,7 @@ def plot_df(start, end, freq, dfs, cols):
     for df in dfs:
         for col in cols:
             if col in df.columns:
-                ax.plot_date(df.index, df[col], '-', label=col)  # add asset output
+                ax.plot_date(df.index, df[col], '*', label=col)  # add asset output
 
     plt.legend()
     plt.grid()

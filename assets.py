@@ -6,7 +6,6 @@ import copy
 from sources import FSource
 
 
-# TODO restructure aliases flatter and better access, maybe dict of original:aliased setup?
 class FAsset:
     """
     Collection of sources with added sampling utility
@@ -65,6 +64,10 @@ class FAsset:
         self.sample_sources(sample_at=sample_at)  # populate sources with data
         self.assemble(sample_at=sample_at)  # populate asset with data per sources
         self.data = self.data[self.data.index.isin(sample_at)]  # return requested sample dates
+
+        # remove garbage columns
+        all_lbls = self.flatten_lbls(True, True, True, True)
+        self.data = self.data[all_lbls]
 
         return self.data
 
@@ -173,7 +176,7 @@ class FAsset:
         :param ylbl:            lbl to interpolate
         :return:
         """
-        
+
         # may have utility in the future to add speed but right now this is not needed
         # # only want to apply interpolation on relevant data so we get min and max of existing sample
         # # get all index where main ylbl is not nan
@@ -190,3 +193,19 @@ class FAsset:
             self.data = interp_zero(self.data, ylbl)
 
         return data
+
+    def flatten_lbls(self, final=True, base=False, fcst=False, asset=True):
+        flat_lbls = list()
+
+        for lbls in self.aliased_lbls.values():
+            for key, lbl in lbls.items():
+                if key == 'final' and final and lbl in self.data.columns:
+                    flat_lbls.append(lbl)
+                if key == 'base' and base and lbl in self.data.columns:
+                    flat_lbls.append(lbl)
+                if key == 'fcst' and fcst and lbl in self.data.columns:
+                    flat_lbls.append(lbl)
+        if asset:
+            flat_lbls.append(self.ylbl)
+
+        return flat_lbls

@@ -251,18 +251,6 @@ class FSource:
         return
 
 
-def convert_ccy(data, col, ccy_native, ccy_out):
-    """ convert native asset currency to output ccy """
-    rates = CurrencyRates()
-
-    data['rate'] = np.nan  # blank col
-    data['rate'].iloc[0] = rates.get_rate(ccy_native, ccy_out)  # get conversion rate
-    data['rate'] = data['rate'].fillna(method='ffill')  # fill rate forwards
-    data[col] = data[col] * data['rate']  # convert Close to requested ccy
-
-    return data
-
-
 class DbSource(FSource):
     def __init__(
             self,
@@ -320,12 +308,24 @@ class DbSource(FSource):
 class Periodic(FSource):
     """ generate/model periodic source data """
 
-    def __init__(self, name, amount, period_unit, period_size, transition_pairs=None, **kwargs):
-        super().__init__(name=name, **kwargs)
+    def __init__(
+            self,
+            name: str,
+            interp: str,
+            amount: int,
+            period_unit: str,
+            period_size: int,
+            transition_pairs: list = [],
+            **kwargs):
         """
         :param transition_pairs             list of lists containing date/amount transition pairs
         :param amount                       amount excluding transition pairs (before or if there are none)
         """
+        super().__init__(name=name,
+                         ylbl=name + "_y",
+                         interp=interp,
+                         forecast=None,  # no forecast needed in generated assets, does not rely on real data anyways
+                         **kwargs)
 
         self.transition_pairs = transition_pairs
         self.amount = amount
@@ -334,59 +334,76 @@ class Periodic(FSource):
 
         self.freq = str(self.period_size) + self.period_unit
 
-        # internal
-        self.ylbl = self.name + "_y"
-
     def sample(self, start, end):
         """
         :notes
             data is always sampled at native frequency
             """
 
-        # get date range from requested dates
-        # first get regular date range(not inclusive)
-        temp_dr = pd.Series([start, end])
-        # create wrapped date range from regular date range
-        sample_dr = wrapped_date_range(temp_dr, self.freq)
+        # start with the base value dataframe
+        final_df = pd.DataFrame()
 
+        # create list of date amount pairs for entire sample
+        pairs = list()
+        # pairs.append([start, self.amount])
         if self.transition_pairs:
-            # create df with transition dates and amounts in x, and y cols
-            trans_amounts = list()
-            trans_dates = list()
-            for date, amount in self.transition_pairs:
-                trans_dates.append(date)
-                trans_amounts.append(amount)
+            pairs.extend(self.transition_pairs)
+            pairs.sort()
+            pairs.reverse()
 
-            transition_amounts_df = pd.DataFrame({'temp': trans_dates,
-                                                 self.ylbl: trans_amounts})
-            # set index and drop col
-            transition_amounts_df = transition_amounts_df.set_index('temp', drop=True)
+            min_transition_date = pairs[-1][0]
+            if start < min_transition_date:
+                pairs.append([start, self.amount])
         else:
-            transition_amounts_df = pd.DataFrame()
+            pairs.append([start, self.amount])
 
-        # add native sampling dates to transition dates df
-        # create df from native dates date range
-        sample_df = pd.DataFrame(sample_dr)
-        sample_df[self.ylbl] = pd.Series()  # add empty ylbl col
-        # remove dates from native dates that are already in transition dates
-        parsed_sample_df = sample_df[~sample_df[0].isin(transition_amounts_df.index)]
-        parsed_sample_df.set_index(0, drop=True, inplace=True)
-        sample_df.set_index(0, drop=True, inplace=True)  # for isin command later
-        # merge native and transition date dataframes
-        sample = pd.merge(transition_amounts_df,
-                          parsed_sample_df,
-                          'outer', left_index=True, right_index=True)
-        sample = sample.sort_index()
+        # get samples for each date pair, date pairs are operated in reverse such that the value col can
+        # be filled using the next using fillna in descending order
+        for start, amount in pairs:
+            tx = pd.Series([start, end])
+            sample_df = pd.DataFrame()  # blank df for iterative sample storage
 
-        # fill in the values using transition dates and amounts
-        final_df = pd.concat([transition_amounts_df, sample])
-        final_df = final_df.sort_index()
-        final_df.fillna(method='ffill', inplace=True)  # forward fill from all transition dates
-        final_df.fillna(self.amount, inplace=True)  # fill remainder with default amount
-        # pull only native date values from final_df (exclude transition dates) - may need to rethink
-        final_df = final_df[final_df.index.isin(sample_df.index)]
+            # dates where periodic data reaches maximum amount
+            amount_dates = wrapped_date_range(tx, self.freq)
+            # periodic data must immediately reset to zero after max dates
+            reset_dates = amount_dates.shift(periods=1, freq='1N')
+            # create df with paired amount at max dates
+            amounts_df = pd.DataFrame(data={'amounts': amount},
+                                      index=amount_dates)
+            # create df with zeroes at reset dates
+            reset_df = pd.DataFrame(data={'reset': 0},
+                                    index=reset_dates)
+            # merge and fill amounts col with zeroes col
+            sample_df = pd.merge(amounts_df, reset_df, 'outer', left_index=True, right_index=True)
+            sample_df['amounts'].fillna(sample_df['reset'], inplace=True)
 
-        self.data = final_df[[self.ylbl]]
+            # add all dates in between for interpolation
+            interp_dates = pd.date_range(sample_df.index.min(), sample_df.index.max(), freq='1D')
+            interp_df = pd.DataFrame(data={'interp': np.nan},
+                                     index=interp_dates)
+
+            # merge interp dates into sample df
+            sample_df = pd.merge(sample_df, interp_df, 'outer', left_index=True, right_index=True)
+            # interpolate and get difference for daily spending
+            sample_df['amounts'] = sample_df['amounts'].interpolate(method='time')
+            sample_df['diff'] = sample_df['amounts'].diff()
+
+            # remove dates used to reset value col
+            sample_df = sample_df.loc[sample_df.index[sample_df['amounts'] != 0]]
+            # merge sample df into final
+            final_df = pd.merge(final_df, sample_df[start:], left_index=True, right_index=True, how='outer')
+
+            if 'final' in final_df.columns:
+                final_df['final'].fillna(final_df['diff'], inplace=True)
+            else:
+                final_df['final'] = final_df['diff']
+
+            # final_df = final_df.drop(columns=['diff'])
+            final_df = final_df[['final']]
+
+        # set labels and return to source data as source base lbl
+        final_df[[self.lbls['base']]] = final_df[['final']]
+        self.data = final_df[[self.lbls['base']]]
 
         self.data = self.data.sort_index()
 
@@ -394,7 +411,7 @@ class Periodic(FSource):
         return self.data
 
 
-# ------------------------------------------MARKET SOURCES------------------------------------------------
+# -------------------------------------------MARKET SOURCES------------------------------------------------
 class Market(FSource):
     """ source for stock market tickers
 
@@ -484,6 +501,18 @@ class QuestradeMarket(Market):
         super().sample(start, end)
 
         return self.data
+
+
+def convert_ccy(data, col, ccy_native, ccy_out):
+    """ convert native asset currency to output ccy """
+    rates = CurrencyRates()
+
+    data['rate'] = np.nan  # blank col
+    data['rate'].iloc[0] = rates.get_rate(ccy_native, ccy_out)  # get conversion rate
+    data['rate'] = data['rate'].fillna(method='ffill')  # fill rate forwards
+    data[col] = data[col] * data['rate']  # convert Close to requested ccy
+
+    return data
 
 
 def main():
