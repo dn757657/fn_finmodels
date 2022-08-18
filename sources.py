@@ -82,7 +82,8 @@ class FSource:
                 data = convert_ccy(data, col, self.native_ccy, self.output_ccy)
         if hasattr(self, 'slice'):
             if self.slice:
-                data[col] = incluloc(data[col], start, end)
+                data = incluloc(data, start, end)
+                # data = data.loc[start:end, :]
 
         return data
 
@@ -385,6 +386,7 @@ class Periodic(FSource):
             # merge interp dates into sample df
             sample_df = pd.merge(sample_df, interp_df, 'outer', left_index=True, right_index=True)
             # interpolate and get difference for daily spending
+            # TODO swappable interpolation methods?
             sample_df['amounts'] = sample_df['amounts'].interpolate(method='time')
             sample_df['diff'] = sample_df['amounts'].diff()
 
@@ -411,7 +413,21 @@ class Periodic(FSource):
         return self.data
 
 
-# -------------------------------------------MARKET SOURCES------------------------------------------------
+# ---------------------------------------------FIN SOURCES---------------------------------------------------
+class QTAccount(FSource):
+
+    def __init__(
+            self,
+            name: str,
+            ylbl: str,
+            interp: str = None,
+            forecast: SingleIdx = None,
+            **kwargs):
+
+        return
+
+
+# -------------------------------------------MARKET SOURCES--------------------------------------------------
 class Market(FSource):
     """ source for stock market tickers
 

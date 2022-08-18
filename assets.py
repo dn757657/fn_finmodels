@@ -53,21 +53,37 @@ class FAsset:
 
     def sample(
             self,
-            sample_at: pd.DatetimeIndex):
+            sample_at: pd.DatetimeIndex,
+            asset: bool = True,
+            src_final: bool = False,
+            src_base: bool = False,
+            src_fcst: bool = False,
+            sources: list = None,
+    ):
         """
         sample aggregate asset components and return dataframe sample
 
         :param sample_at:   pandas compatible date-type series
+        :param asset        include asset total sample in sample
+        :param src_final:   include source final columns in sample
+        :param src_base:    include source base columns in sample
+        :param src_fcst:    include source forecast columns in sample
+        :param sources      list of sources to sample if not all
+
         :return: df containing source sample data and asset sample data at the specified dates in sample_at
         """
+
+        if not sources:
+            sources = [source.name for source in self.sources]
 
         self.sample_sources(sample_at=sample_at)  # populate sources with data
         self.assemble(sample_at=sample_at)  # populate asset with data per sources
         self.data = self.data[self.data.index.isin(sample_at)]  # return requested sample dates
 
         # remove garbage columns
-        all_lbls = self.flatten_lbls(True, True, True, True)
-        self.data = self.data[all_lbls]
+        ret_lbls = self.flatten_lbls(asset=asset, base=src_base, final=src_final, fcst=src_fcst)
+        ret_lbls = [x for x in ret_lbls if any(substring in x for substring in sources)]
+        self.data = self.data[ret_lbls]
 
         return self.data
 
@@ -150,17 +166,20 @@ class FAsset:
 
     def assemble_ylbl(self):
         """ assemble all source data into main asset data label """
+        # TODO option to assemble using any source column as assembly column? - this way could assemble using source
+        # TODO limits and compare on same graph?
 
         for source in self.sources:
             # interp source data to match index of asset ylbl - use temp col as to not disturb original data
             source_final_lbl = self.aliased_lbls[source.name]['final']
-            self.data['final_temp'] = self.data[source_final_lbl]
-            self.interpolate(source.interp, self.data, 'final_temp')
+            # self.data['final_temp'] = self.data[source_final_lbl]
+            self.interpolate(source.interp, self.data, source_final_lbl)
+            self.data[source_final_lbl].fillna(0, inplace=True)  # backfill
 
             if self.ylbl in self.data.columns:
-                self.data[self.ylbl] = self.data[self.ylbl] + self.data['final_temp']
+                self.data[self.ylbl] = self.data[self.ylbl] + self.data[source_final_lbl]
             else:
-                self.data[self.ylbl] = self.data['final_temp']
+                self.data[self.ylbl] = self.data[source_final_lbl]
 
         return
 

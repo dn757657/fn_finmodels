@@ -80,6 +80,25 @@ class Static(SingleIdx):
         return self.forecast
 
 
+class ZeroForecast(SingleIdx):
+    """ always forecast zero """
+
+    def __init__(self, name):
+        super().__init__(name=name)
+
+    def get_forecast(self, start, end, training_df):
+
+        default_freq = '1D'
+        date_range = pd.date_range(start, end, freq=default_freq)
+        final_dr = wrapped_date_range(date_range, default_freq)
+
+        fcst_df = pd.DataFrame({'index': final_dr, training_df.name: 0})
+        fcst_df.set_index('index', drop=True, inplace=True)
+
+        self.forecast = fcst_df
+        return self.forecast
+
+
 class KatsProphet(SingleIdx):
     """  forecast using kats library and Prophet model """
 
