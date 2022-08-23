@@ -36,5 +36,7 @@ class Source:
         # TODO process mods funcs, functions to modify processed data, df in df out
         # TODO assemble everything as functions and execute at endd
         # TODO incorporate samplefuncs into forecasting? samplefunc as training
+        # TODO samplefuncs must produce df with single column
+        # TODO preferebly samplefunc columns are unique and can be identified in final assembly
 
         return processed
