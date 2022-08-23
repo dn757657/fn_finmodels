@@ -37,18 +37,25 @@ class Assembler:
         final = self.dummy_assemble(suba=subs)
         return final
 
-    def dummy_drill(self, subs):
-
-        while any(isinstance(x, list) for x in subs):
-            for i, sub in enumerate(subs):
-                if isinstance(sub, list):
-                    if any(isinstance(x, list) for x in sub):
-                        self.dummy_drill(subs=sub)
-                    else:
-                        subs[i] = self.dummy_assemble(sub)
-                        break
-
-        return subs
+    # def condense(self, condense_list, condensor_func):
+    #     """
+    #     condense all lists in condense list using the condensor function
+    #     :param condense_list:       list of components or lists of any level to be processed by condensor func
+    #     :param condensor_func:      function that takes a list of items and returns a single item
+    #     :return:                    condense list fully condensed to single item
+    #     """
+    #
+    #     while any(isinstance(x, list) for x in condense_list):
+    #         for i, sub in enumerate(condense_list):
+    #             if isinstance(sub, list):
+    #                 if any(isinstance(x, list) for x in sub):
+    #                     # recurse for each sub list until no lists
+    #                     self.condense(condense_list=sub, condensor_func=condensor_func)
+    #                 else:
+    #                     condensor_func(condense_list)
+    #                     break
+    #
+    #     return condense_list
 
     def dummy_assemble(self, suba):
         dummy = 0
@@ -84,6 +91,18 @@ class Assembler:
 
         return [{'df': assembly_df, 'lbl': out_lbl}]
 
+    def df_condenser(self, df_list):
+        """ merge list of dataframes in native list order """
+
+        # combine requested index for assembly from all dfs
+        to_list = flatten(df_list)
+        to_idx = pd.DatetimeIndex(next(to_list).index)
+        to_idx = [to_idx.union(x.index) for x in to_list][0]
+
+
+
+        return
+
 
 from collections.abc import Iterable
 
@@ -97,3 +116,24 @@ def flatten(xs):
             yield from flatten(x)
         else:
             yield x
+
+
+def condense(condense_list, condenser_func):
+    """
+    condense all lists in condense list using the condenser function
+    :param condense_list:       list of components or lists of any level to be processed by condenser func
+    :param condenser_func:      function that takes a list of items and returns a single item
+    :return:                    condense list fully condensed to single item
+    """
+
+    while any(isinstance(x, list) for x in condense_list):
+        for i, sub in enumerate(condense_list):
+            if isinstance(sub, list):
+                if any(isinstance(x, list) for x in sub):
+                    # recurse for each sub list until no lists
+                    condense(condense_list=sub, condenser_func=condenser_func)
+                else:
+                    condenser_func(condense_list)
+                    break
+
+    return condense_list

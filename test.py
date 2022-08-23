@@ -1,4 +1,4 @@
-from assets import DFAsset, PeriodicAsset, EvalAsset, FAsset
+from assets import FAsset
 from model import FinModel
 from utils import sqlalch_2_df
 from df_utils import wrapped_date_range
