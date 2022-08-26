@@ -335,7 +335,9 @@ class Periodic(FSource):
 
         self.freq = str(self.period_size) + self.period_unit
 
-    def sample(self, start, end):
+    def sample(self,
+               start: datetime.datetime,
+               end: datetime.datetime) -> pd.DataFrame:
         """
         :notes
             data is always sampled at native frequency

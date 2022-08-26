@@ -29,6 +29,8 @@ from model import FinModel
 from interpolation import interp_zero
 import numpy as np
 import copy
+from assembly import DFAssembly
+from processing import func_runner, df_adder
 
 # # get banking database models and init connection
 # db = BplModel()
@@ -46,75 +48,50 @@ sample_at1 = pd.date_range(start=start, end=end, freq='1D')
 
 
 def assembly_testing():
-    # b = banking_asset_prod()
-    #
-    # food_budget_src = Periodic(name='food_budget',
-    #                            interp='linear',
-    #                            amount=-400,
-    #                            period_unit='M',
-    #                            period_size=1,
-    #                            cumulative=False)
-    # db = BplModel()
-    # session = Session(db.engine)
-    # food_spending_src = DbSource(name='food_spend',
-    #                              ccy_native='CAD',
-    #                              interp='to_previous',
-    #                              session=session,
-    #                              table=Txn,
-    #                              index='txn_date',
-    #                              joins=[Category],
-    #                              filters=[Category.cat_desc == 'food'],
-    #                              forecast=Source(name=food_budget_src.name, source=food_budget_src),
-    #                              cumulative=True,
-    #                              duplicate_indices='sum')
-    #
-    # subs = [food_spending_src.sample(start, end)[[food_spending_src.lbls['base']]],
-    #         food_spending_src.sample(start, end)[[food_spending_src.lbls['fcst']]]]
-    #
-    # # combine requested index for assembly from all dfs
-    # to_list = flatten(subs)
-    # to_idx = pd.DatetimeIndex(next(to_list).index)
-    # to_idx = [to_idx.union(x.index) for x in to_list][0]
-    #
-    # idx_df = pd.DataFrame({'index': to_idx, 'rando': np.nan})
-    # idx_df.set_index('index', drop=True, inplace=True)
-    #
-    # sample_df = pd.DataFrame({'index': sample_at1, 'rando': np.nan})
-    # sample_df.set_index('index', drop=True, inplace=True)
-    #
-    # all_idx_df = pd.merge(sample_df, idx_df, right_index=True, left_index=True, how='outer')
-    #
-    # subs.append(all_idx_df)
-    # # subs.append(sample_df)
-    # # could also interp future seperately? would need to ensure interp is confined to each
-    # # individual sample where its applied?
-    # subs.append(interp_zero(copy.copy(pd.merge(subs[0], all_idx_df, right_index=True, left_index=True, how='outer')), food_spending_src.lbls['base']))
 
-    subs = [[[1, 2, 3], [1, 2, 3]], [1, 2, 3]]
-    a = flatten(subs, mod_func=addemup)
-    a = list(a)
+    food_budget_src = Periodic(name='food_budget',
+                               interp='linear',
+                               amount=-400,
+                               period_unit='M',
+                               period_size=1,
+                               cumulative=False)
 
-    a = process(subs, df_condenser)
+    test_child1 = DFAssembly(name='tc1',
+                             sources=[food_budget_src],
+                             source_assembler=df_adder)
 
-    # subs2 = [a, interp_zero(a, a.columns[0])]
+    test_child2 = DFAssembly(name='tc2',
+                             sources=[food_budget_src,
+                                      food_budget_src],
+                             source_assembler=df_adder)
+
+    test_child3 = DFAssembly(name='tc3',
+                             sources=[food_budget_src,
+                                      food_budget_src,
+                                      food_budget_src],
+                             source_assembler=df_adder)
+
+    sub_parent1 = DFAssembly(name='sp1',
+                             sources=[food_budget_src,
+                                      test_child1],
+                             source_assembler=df_adder)
+
+    sub_parent2 = DFAssembly(name='sp2',
+                             sources=[test_child2,
+                                      test_child3],
+                             source_assembler=df_adder)
+
+    test_parent = DFAssembly(name='test',
+                             sources=[test_child1,
+                                      sub_parent1,
+                                      sub_parent2],
+                             source_assembler=df_adder)
+
+    sa = test_parent.sample(start, end)
+
+    print()
 
     return
-
-def addemup(xs):
-    y = 0
-    for x in xs:
-        y += x
-
-    return y
-# maybe a general py utils file is in store
-# from collections.abc import Iterable
-# def flatten(xs):
-#     for x in xs:
-#         if isinstance(x, Iterable) and not isinstance(x, pd.DatetimeIndex) and not isinstance(x, pd.DataFrame)\
-#                 and not isinstance(x, (str, bytes)):
-#             yield from flatten(x)
-#         else:
-#             yield x
 
 
 def main():

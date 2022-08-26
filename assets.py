@@ -172,7 +172,6 @@ class FAsset:
         for source in self.sources:
             # interp source data to match index of asset ylbl - use temp col as to not disturb original data
             source_final_lbl = self.aliased_lbls[source.name]['final']
-            # self.data['final_temp'] = self.data[source_final_lbl]
             self.interpolate(source.interp, self.data, source_final_lbl)
             self.data[source_final_lbl].fillna(0, inplace=True)  # backfill
 
