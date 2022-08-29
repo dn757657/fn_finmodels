@@ -19,37 +19,25 @@ from df_utils import wrapped_date_range
 from forecast import SingleIdx
 
 
-class FSource:
+class FPipeline:
     """ data sources/pipelines """
 
     def __init__(
             self,
             name: str,
             ylbl: str,
-            interp: str = None,
-            forecast: SingleIdx = None,
             **kwargs
     ):
         """
         :param name:            source name
         :param ylbl:            lbl denoting final source data
-        :param interp:          interpolation method
-        :param forecast:        object with get_forecast method
-        :param kwargs:          source options
         """
 
         self.name = name
         self.data = pd.DataFrame()
-        self.lbls = {'final': ylbl + "_final",
-                     'base': ylbl,
-                     'fcst': ylbl + "_fcst"}
-
-        self.interp = interp  # set interp type
-        self.forecast = forecast  # forecast object for predicting future source values
+        self.ylbl = ylbl
 
         self.__dict__.update(kwargs)  # optional params and source modifiers
-
-        self.fcst_df = pd.DataFrame()  # forecast data
 
         pass
 
@@ -58,8 +46,7 @@ class FSource:
             self,
             data: pd.DataFrame,
             col: str,
-            start: object,
-            end: object,
+            **kwargs,
     ):
         """
         apply options to data
@@ -82,8 +69,10 @@ class FSource:
                 data = convert_ccy(data, col, self.native_ccy, self.output_ccy)
         if hasattr(self, 'slice'):
             if self.slice:
-                data = incluloc(data, start, end)
-                # data = data.loc[start:end, :]
+                if ('start' and 'end') in kwargs:
+                    start = kwargs['start']
+                    end = kwargs['end']
+                    data = incluloc(data, start, end)
 
         return data
 
@@ -109,7 +98,7 @@ class FSource:
             min_index = value_indexes.min()
 
             # get cumulative adjustment from base
-            adjust = data.loc[min_index, 'base_temp'] - data.loc[min_index, self.lbls['final']]
+            adjust = data.loc[min_index, 'base_temp'] - data.loc[min_index, self.lbls['base']]
 
             data.loc[:, col] = pd.DataFrame.cumsum(data.loc[:, col])
             data.loc[:, col] = data.loc[:, col] + adjust
@@ -178,8 +167,9 @@ class FSource:
 
     def sample(
             self,
-            start: object,
-            end: object):
+            start: object = None,
+            end: object = None,
+            **kwargs):
         """
         populate self.data as df with sample in start/end bounds
         :param start:       date type object lower sample bound
@@ -187,11 +177,10 @@ class FSource:
         """
 
         self.sample_base()  # populate base data
-        self.sample_forecast(end=end,
-                             training_df=self.data[self.lbls['base']])
-        self.assemble()
-
-        self._apply_options(self.data, self.lbls['final'], start, end)  # apply sample options
+        # self.sample_forecast(end=end,
+        #                      training_df=self.data[self.lbls['base']])
+        # self.assemble()
+        self._apply_options(self.data, self.lbls['base'], start=start, end=end)  # apply sample options
 
         return self.data
 
@@ -336,8 +325,9 @@ class Periodic(FSource):
         self.freq = str(self.period_size) + self.period_unit
 
     def sample(self,
-               start: datetime.datetime,
-               end: datetime.datetime) -> pd.DataFrame:
+               start: datetime.datetime = None,
+               end: datetime.datetime = None,
+               **kwargs) -> pd.DataFrame:
         """
         :notes
             data is always sampled at native frequency
@@ -411,7 +401,7 @@ class Periodic(FSource):
 
         self.data = self.data.sort_index()
 
-        super().sample(start=start, end=end)
+        super().sample(start=start, end=end, **kwargs)
         return self.data
 
 

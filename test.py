@@ -26,11 +26,11 @@ from interpolation import interp_zero
 from sources import YahooMarket, DbSource, Periodic
 from forecast import KatsProphet, Static, Source, ZeroForecast
 from model import FinModel
-from interpolation import interp_zero
+from interpolation import interp_zero, interp_prev
 import numpy as np
 import copy
-from assembly import DFAssembly
-from processing import func_runner, df_adder
+from assembly import DFAssembly, AssembledDF, SourcedDF, ForecastedDF
+from processing import func_runner, df_adder, df_condenser
 
 # # get banking database models and init connection
 # db = BplModel()
@@ -56,38 +56,39 @@ def assembly_testing():
                                period_size=1,
                                cumulative=False)
 
-    test_child1 = DFAssembly(name='tc1',
-                             sources=[food_budget_src],
-                             source_assembler=df_adder)
+    db = BplModel()
+    session = Session(db.engine)
+    food_spending_src = DbSource(name='food_spend',
+                                 ccy_native='CAD',
+                                 interp='to_previous',
+                                 session=session,
+                                 table=Txn,
+                                 index='txn_date',
+                                 joins=[Category],
+                                 filters=[Category.cat_desc == 'food'],
+                                 forecast=Source(name=food_budget_src.name, source=food_budget_src),
+                                 cumulative=True,
+                                 duplicate_indices='sum')
 
-    test_child2 = DFAssembly(name='tc2',
-                             sources=[food_budget_src,
-                                      food_budget_src],
-                             source_assembler=df_adder)
+    food_sourced = SourcedDF(name='food_sourced',
+                             assembler=df_adder,
+                             filler=interp_prev,
+                             sources=[{'sourcer': food_spending_src.sample,
+                                       'lbl': food_spending_src.lbls['base']}])
 
-    test_child3 = DFAssembly(name='tc3',
-                             sources=[food_budget_src,
-                                      food_budget_src,
-                                      food_budget_src],
-                             source_assembler=df_adder)
+    food_forecasted = ForecastedDF(name='food_forecasted',
+                                   assembler=df_condenser,
+                                   filler=interp_prev,
+                                   trainer=food_sourced.sample,
+                                   forecaster=food_budget_src.sample)
 
-    sub_parent1 = DFAssembly(name='sp1',
-                             sources=[food_budget_src,
-                                      test_child1],
-                             source_assembler=df_adder)
+    bank_assembled = AssembledDF(name='bank_all',
+                                 assembler=df_condenser,
+                                 filler=interp_prev,
+                                 subs=[food_forecasted])
 
-    sub_parent2 = DFAssembly(name='sp2',
-                             sources=[test_child2,
-                                      test_child3],
-                             source_assembler=df_adder)
-
-    test_parent = DFAssembly(name='test',
-                             sources=[test_child1,
-                                      sub_parent1,
-                                      sub_parent2],
-                             source_assembler=df_adder)
-
-    sa = test_parent.sample(start, end)
+    sample_idx = pd.date_range(start, end, freq='1MS')
+    sa = bank_assembled.sample(sample_idx)
 
     print()
 
