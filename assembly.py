@@ -160,6 +160,7 @@ class AssembledDF(SubDF):
         super().sample(sample_idx=sample_idx)
 
         self.data = self.filler(self.data, self.name)  # fill any blanks not filled by sub fillers
+        # TODO check and report if df is complete aka missing sample_idx values or not
         self.data = self.data[self.data.index.isin(sample_idx)]
 
         return self.data
